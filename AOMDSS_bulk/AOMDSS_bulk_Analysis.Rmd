@@ -1,0 +1,1551 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+```
+
+# Load libraries and other scripts
+
+```{r}
+
+library(rafalib)
+library(edgeR)
+library(rtracklayer)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+library(ggdendro)
+library(ggbeeswarm)
+library(grid)
+library(gridExtra)
+library(ggpubr)
+library(pheatmap)
+library(stringr)
+library(ggbeeswarm)
+
+
+```
+
+
+# Read data files
+
+The data used in this analysis were generated in a study of LXR activation in AOM/DSS, a mouse model of colorectal cancer. Colon samples were collected at four time points: Prior to AOM (day 0), and ~7 days after each of three cycles of DSS (days 22, 43 and 70). LXR agonist GW3965 was given from start of protocol. To achieve a "day 0" diet control, non-AOM/DSS samples were collected after 22 or 43 days of standard or GW3965 diet. As such, "day 0" and "day 22/43 Control" are used interchangeably.
+
+Samples were used for bulk RNASeq, and raw sequences were quantified and annotated (with ENSEMBL ID) using Kallisto. Counts and TPMs from Kallisto-generated .tsv-files are combined into one matrix each and annotated with gene symbols. Count, TPM and metadata matrices are ordered to match sample order across matrices.
+
+
+```{r}
+if(!all(file.exists("analysis/gene_tpm.tsv","analysis/gene_counts.tsv"))){
+  if(!file.exists("raw_data/metadata.csv")){
+    # Download metadata file if it cannot be found
+    
+  }
+  filenames <- list.files("raw_data","R.*\\.tsv")
+  if(length(filenames)==0){
+    # Download kallisto count files if they cannot be found
+    
+    
+    filenames <- list.files("raw_data","R.*\\.tsv")
+  }
+  
+  
+  if(!all(file.exists("analysis/raw_counts.tsv","analysis/raw_tpm.tsv"))){
+    # Compile count and TPM tables from kallisto counts
+
+    raw_counts <- sapply(filenames,function(x){
+      read.delim(paste0("raw_data/",x))[,"est_counts"] })
+    colnames(raw_counts) <- sub(".tsv","",colnames(raw_counts))
+    rownames(raw_counts) <- read.delim(paste0("raw_data/",filenames[1]))[,"target_id"]
+  
+  
+    raw_tpm <- sapply(filenames,function(x){
+      read.delim(paste0("raw_data/",x))[,"tpm"] })
+    colnames(raw_tpm) <- sub(".tsv","",colnames(raw_tpm))
+    rownames(raw_tpm) <- read.delim(paste0("raw_data/",filenames[1]))[,"target_id"]
+    
+    
+    # Load metadata and match to counts data
+  
+    metadata <- read.csv2("raw_data/metadata.csv", row.names = 1 )
+    common <- rownames(metadata)[ rownames(metadata) %in% colnames(raw_counts)]
+    
+    metadata <- metadata[common, ]
+    raw_counts <- round(raw_counts[,common],0)
+    # raw_counts <- raw_counts[,common]
+    raw_tpm <- raw_tpm[,common]
+  
+    
+    # Save counts and TPM tables and metadata
+    
+    write.table(raw_counts,paste0("analysis/raw_counts.tsv"))
+    write.table(raw_tpm,paste0("analysis/raw_tpm.tsv"))
+    write.csv2(metadata, "raw_data/metadata.csv")
+  }else{
+    raw_counts = read.table("analysis/raw_counts.tsv", row.names = 1)
+    raw_tpm = read.table("analysis/raw_tpm.tsv", row.names = 1)
+    metadata = read.csv2("raw_data/metadata.csv", row.names = 1)
+  }
+  
+  
+  
+  # Translate to gene names
+  # Next, we can summarize ensembl transcript IDs to gene symbols for easier data interpretation. Here, we will download the GTF file from ensemble used for the annotation in the ammping step from Kallisto and annotate accordingly.
+
+  if(!file.exists( paste0("raw_data/Mus_musculus.GRCm38.101.gtf") )){
+    setwd("raw_data")
+    system("wget ftp://ftp.ensembl.org/pub/release-101/gtf/mus_musculus/Mus_musculus.GRCm38.101.gtf.gz")
+    system("gunzip Mus_musculus.GRCm38.101.gtf.gz")
+    setwd("../")
+  }
+  
+  gtf <- import.gff(paste0("raw_data/Mus_musculus.GRCm38.101.gtf"))
+  gtf <- gtf[ ! is.na(gtf$transcript_id) ,]
+  #gtf <- gtf[ gtf$transcript_source == "ensembl_havana" ,]
+  #gtf <- gtf[ gtf$transcript_biotype == "protein_coding" ,]
+  
+  annot <- gtf$gene_name [ match( sub("[.].*","",rownames(raw_counts)),gtf$transcript_id ) ]
+  annot[is.na(annot)] <- "NA"
+  
+  counts <- rowsum(raw_counts , group = annot)
+  counts <- counts[rownames(counts) != "NA",]
+  
+  tpm <- rowsum(raw_tpm , group = annot)
+  tpm <- tpm[rownames(tpm) != "NA",]
+  
+  write.table(counts,"analysis/counts.tsv")
+  write.table(tpm,"analysis/tpm.tsv")
+  
+  # Filter counts and TPM tables
+  
+  sel <- rowSums( counts > 10 ) >= 3
+
+  filt_counts <- counts[sel,]
+  filt_tpm <- tpm[sel,]
+  
+  # Save filtered tables
+  
+  write.table(filt_counts,"analysis/gene_counts.tsv")
+  write.table(filt_tpm,"analysis/gene_tpm.tsv")
+  
+  
+  
+  
+  
+}else{
+  
+  filt_counts = read.table("analysis/gene_counts.tsv")
+  filt_tpm = read.table("analysis/gene_tpm.tsv")
+  metadata <- read.csv2("raw_data/metadata.csv", row.names = 1 )
+  filt_counts = filt_counts[,rownames(metadata)]
+  
+  counts = read.table("analysis/counts.tsv")
+  tpm = read.table("analysis/tpm.tsv")
+  
+
+  
+}
+
+oldcounts = read.table("/Users/jenfra/LocalWork/repos/e_villablanca_2005/analysis_bulk/counts.tsv")
+  oldcounts = oldcounts[,rownames(metadata)]
+oldfilt = read.table("/Users/jenfra/LocalWork/repos/e_villablanca_2005/analysis_bulk/filt_counts.tsv")
+  oldfilt = oldfilt[,rownames(metadata)]
+```
+
+
+# Quality control
+
+Homogeneity in sample quality is assessed through number of counts, number of features and % ribosomal RNA. Integrity values (RIN) provided by Novogene have also been included. The comparisons indicate some degradation of certain samples (lower RIN and higher % ribosome RNA), mostly AOM-DSS samples at day 43. This should be considered for further analyses that include day 43.
+
+```{r}
+metadata$nFeatures <- colSums(filt_counts>0)
+
+metadata$nCounts <- colSums(filt_counts)
+
+is_mito <- grepl("mt-",rownames(filt_counts))
+
+metadata$perc_mito <- colSums(filt_counts[is_mito,]) / colSums(filt_counts) * 100
+
+is_ribo <- grepl("Rp[ls]",rownames(filt_counts))
+
+metadata$perc_ribo <- colSums(filt_counts[is_ribo,]) / colSums(filt_counts) * 100
+
+write.table(metadata,"analysis/metadata_QC.tsv")
+
+
+```
+
+
+
+```{r, fig.height = c(8,6)}
+metadata$diet <- factor(metadata$diet, levels = c("STD","GW3965"))
+
+metadataqc = metadata
+x <- c("nFeatures","nCounts","perc_ribo","perc_mito","RIN_values")
+metadataqc$Group = paste(gsub("YES","AOM-DSS",
+                                gsub("NO","Ctrl", as.character(metadataqc$AOM_DSS))), 
+                         metadataqc$day, metadataqc$diet)
+metadataqc$Group = factor(metadataqc$Group, levels = paste(rep(c("Ctrl","AOM-DSS"),c(6,6)), rep(rep(c("22","43","70"),c(2,2,2)),2),rep(c("STD","GW3965"),6)))
+
+
+glist = list()
+for(i in x){
+  for(g in c("Group", "cage")){
+    imean = aggregate(metadataqc[,i],by=list(metadataqc[,g]),mean)
+    imd = metadataqc
+    imd = imd[order(imd[,g]),]
+    imd$sample_ID = factor(imd$sample_ID, levels = imd$sample_ID)
+    imd$mean = imean$x[match(imd[,g], imean$Group.1)]
+    imeanx = aggregate(as.numeric(imd$sample_ID), by = list(imd[,g]), mean)
+    glist[[g]][[i]] = ggplot(imd, aes_string(y = i, x = "as.numeric(sample_ID)")) + 
+      geom_bar(aes_string(fill = g), stat = "identity", position = "dodge", show.legend = FALSE, alpha = 0.8) +
+      theme(panel.background = element_blank(),
+            axis.text.x = element_text(angle = 30, hjust = 1, size = 10),
+            axis.title.x = element_blank()) + 
+      geom_line(aes_string(y = "mean", group = g)) + 
+      scale_x_continuous(breaks = imeanx[,2], labels = imeanx[,1])
+  }
+  
+}
+plot_grid(textGrob("Model, day and diet", hjust = 0.5, gp=gpar(fontsize=16)),
+          plot_grid(plotlist = glist[["Group"]], ncol = 1, align = "v"),ncol = 1, rel_heights = c(0.05,1))
+plot_grid(textGrob("Cage", hjust = 0.5, gp=gpar(fontsize=16)),
+          plot_grid(plotlist = glist[["cage"]], ncol = 1, align = "v"),ncol = 1, rel_heights = c(0.05,1))
+
+
+```
+
+
+# TPM variability
+
+In order to get an overall view of the variation between samples, the 500 most variable genes are selected. The graph below shows the mean expression and standard deviation, with each dot representing one gene and the selected genes marked in red.
+
+```{r}
+log_tpm <- log2(filt_tpm+1)
+log_sd <- apply(log_tpm,1,sd)
+log_means <- apply(log_tpm,1,mean)
+HVGs <- names(sort(log_sd,T))[1:500] # highly variable genes
+plot(log_means,log_sd,
+     col=ifelse(names(log_sd) %in% HVGs,"red","black" ),
+     cex=.5,pch=16)
+lines(smooth.spline(log_means,log_sd,spar = 1,nknots = 50),col="blue",lwd=3)
+```
+
+## PCA
+
+Using the log-transformed expression of the 500 highly variable genes, a PCA is performed to visualize the main variation between samples. Different aspects of the metadata are overlayed on the visualization in order to identify contributing factors. In general, samples can be grouped by non-AOM-DSS and AOM-DSS, and between days in the case of AOM-DSS. Differences between diets are not visible in the first principal components. Differences in measures of integrity are not reflected on the first two principal components.
+
+```{r}
+PC <- prcomp( t(log_tpm[HVGs,]) ,center = T, scale. = T )
+PCvar <- PC$sdev^2 / sum(PC$sdev^2) * 100
+names(PCvar) <- 1:length(PCvar)
+
+elbow = ggplot(data.frame(variance = PCvar, PC = as.numeric(names(PCvar))), aes(x = PC, y = variance)) + 
+  geom_point() + geom_line() +
+  theme(panel.background = element_blank()) +
+  labs(y = "% Variance explained")
+
+pcdata <- cbind(PC$x, metadata)
+
+g <- ggplot(pcdata, aes(x = PC1,y = PC2, color = factor(day), shape = AOM_DSS)) +
+  geom_point(size = 4) + theme_classic() + 
+  ggrepel::geom_text_repel(aes(label = diet))
+plot_grid(elbow,g, ncol = 2, rel_widths = c(0.5,1))
+
+
+ggplot(pcdata, aes(x = PC1,y = PC3, color = factor(day), shape = AOM_DSS)) +
+  geom_point(size = 4) + theme_classic() + 
+  ggrepel::geom_text_repel(aes(label = diet))
+
+
+g1<- ggplot(pcdata, aes(x = PC1,y = PC2)) + geom_point(aes(size = RIN_values)) +
+  theme_classic() + theme(legend.position = "bottom")
+g2 <- ggplot(pcdata, aes(x = PC1,y = PC2)) + geom_point(aes(size = perc_ribo)) + 
+  theme_classic() + theme(legend.position = "bottom")
+plot_grid(g1,g2, ncol = 2)
+
+
+```
+
+## Hierarchical clustering
+
+Using the log-transformed expression of the 500 highly variable genes, hierarchical clustering is performed to identify groups of similar samples.
+
+
+### All samples
+
+Samples cluster imperfectly based on AOM-DSS and day when examining all samples.
+
+```{r, fig.height=8}
+
+# Scale each measurement (independently) to have a mean of 0 and variance of 1
+hvgdata.scaled <- t(log_tpm[HVGs,])
+hvgdata.scaled <- as.data.frame(scale(hvgdata.scaled))
+
+# Run clustering
+hvgdata.matrix <- as.matrix(hvgdata.scaled)
+hvgdata.dendro <- as.dendrogram(hclust(d = dist(x = hvgdata.matrix), method = "ward.D2"))
+gene.dendro <- as.dendrogram(hclust(d = dist(x = t(hvgdata.matrix)), method = "ward.D2"))
+
+p1_dendro = dendro_data(hvgdata.dendro)
+
+# Create dendrogram plot
+dendro.plot <- ggdendrogram(data = hvgdata.dendro, rotate = FALSE, theme_dendro = FALSE) + 
+  theme(axis.text.y = element_blank(), axis.text.x = element_text(size = 12)) +
+  coord_cartesian(xlim = c(0.5, nrow(hvgdata.scaled) + 0.5), expand = FALSE) +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank())
+  
+gene.dendro.plot <- ggdendrogram(data = gene.dendro, rotate = TRUE) + 
+  theme(axis.text.y = element_blank())
+
+# Heatmap
+
+hvgdata.withnames <- as.data.frame(hvgdata.scaled)
+hvgdata.withnames$names <- rownames(hvgdata.scaled)
+# Data wrangling
+hvgdata.long <- as.data.frame(melt(hvgdata.withnames, id = c("names")))
+# Extract the order of the tips in the dendrogram
+hvgdata.order <- order.dendrogram(hvgdata.dendro)
+gene.order <- order.dendrogram(gene.dendro)
+# Order the levels according to their position in the cluster
+hvgdata.long$names <- factor(x = hvgdata.long$names,
+                               levels = rownames(hvgdata.scaled)[hvgdata.order], 
+                               ordered = TRUE)
+hvgdata.long$variable <- factor(x = hvgdata.long$variable,
+                               levels = colnames(hvgdata.scaled)[gene.order], 
+                               ordered = TRUE)
+
+hvgdata.metadata <- metadata
+hvgdata.metadata$AOM_DSS <- as.character(hvgdata.metadata$AOM_DSS)
+hvgdata.metadata$AOM_DSS[hvgdata.metadata$AOM_DSS == "YES"] <- "AOMDSS"
+hvgdata.metadata$AOM_DSS[hvgdata.metadata$AOM_DSS == "NO"] <- "Ctrl"
+hvgdata.metadata$names <- rownames(hvgdata.metadata)
+metadata.long <- as.data.frame(melt(hvgdata.metadata, id = c("names")))
+metadata.long$names <- factor(x = metadata.long$names,
+                               levels = rownames(hvgdata.scaled)[hvgdata.order], 
+                               ordered = TRUE)
+metadata.long$value <- factor(x = metadata.long$value,
+                               levels = c("22","43","70","AOMDSS","Ctrl","STD","GW3965",unique(metadata.long$variable[!(metadata.long$variable %in% c("22","43","70","AOMDSS","Ctrl","STD","GW3965"))])), 
+                               ordered = TRUE)
+
+# Create heatmap plot
+heatmap.plot <- ggplot(data = hvgdata.long, aes(x = names, y = variable)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_gradient2(low = "#000088",high = "#880000", mid = "white") +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "right",
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) + labs(fill = "Expression")
+
+# Create metadata heatmap plot
+metadata.heatmap.plot <- ggplot(data = metadata.long[metadata.long$variable %in% c("diet","AOM_DSS","day"),], aes(x = names, y = variable)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_ordinal() + 
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "right",
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) + labs(fill = "Group")
+
+plot_grid(dendro.plot, metadata.heatmap.plot, heatmap.plot, ncol = 1, align = "v", axis = "lr", rel_heights = c(0.3,0.1,0.6))
+
+
+```
+
+
+### AOM-DSS samples
+
+Samples cluster imperfectly based on day when examining AOM-DSS samples. The only group in which STD and GW cluster separately based on these genes is among the day 22 AOM-DSS samples.
+
+```{r, fig.height = 8}
+
+
+# Scale each measurement (independently) to have a mean of 0 and variance of 1
+hvgdata.scaled <- t(log_tpm[HVGs,metadata$AOM_DSS %in% "YES"])
+hvgdata.scaled <- as.data.frame(scale(hvgdata.scaled))
+
+# Run clustering
+hvgdata.matrix <- as.matrix(hvgdata.scaled)
+hvgdata.dendro <- as.dendrogram(hclust(d = dist(x = hvgdata.matrix), method = "ward.D2"))
+gene.dendro <- as.dendrogram(hclust(d = dist(x = t(hvgdata.matrix)), method = "ward.D2"))
+
+p1_dendro = dendro_data(hvgdata.dendro)
+
+# Create dendrogram plot
+dendro.plot <- ggdendrogram(data = hvgdata.dendro, rotate = FALSE, theme_dendro = FALSE) + 
+  theme(axis.text.y = element_blank(), axis.text.x = element_text(size = 12)) +
+  coord_cartesian(xlim = c(0.5, nrow(hvgdata.scaled) + 0.5), expand = FALSE) +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank())
+  
+gene.dendro.plot <- ggdendrogram(data = gene.dendro, rotate = TRUE) + 
+  theme(axis.text.y = element_blank())
+
+# Heatmap
+
+hvgdata.withnames <- as.data.frame(hvgdata.scaled)
+hvgdata.withnames$names <- rownames(hvgdata.scaled)
+# Data wrangling
+hvgdata.long <- as.data.frame(melt(hvgdata.withnames, id = c("names")))
+# Extract the order of the tips in the dendrogram
+hvgdata.order <- order.dendrogram(hvgdata.dendro)
+gene.order <- order.dendrogram(gene.dendro)
+# Order the levels according to their position in the cluster
+hvgdata.long$names <- factor(x = hvgdata.long$names,
+                               levels = rownames(hvgdata.scaled)[hvgdata.order], 
+                               ordered = TRUE)
+hvgdata.long$variable <- factor(x = hvgdata.long$variable,
+                               levels = colnames(hvgdata.scaled)[gene.order], 
+                               ordered = TRUE)
+
+hvgdata.metadata <- metadata[metadata$AOM_DSS %in% "YES",]
+hvgdata.metadata$AOM_DSS <- as.character(hvgdata.metadata$AOM_DSS)
+hvgdata.metadata$AOM_DSS[hvgdata.metadata$AOM_DSS == "YES"] <- "AOMDSS"
+hvgdata.metadata$AOM_DSS[hvgdata.metadata$AOM_DSS == "NO"] <- "Ctrl"
+hvgdata.metadata$names <- rownames(hvgdata.metadata)
+metadata.long <- as.data.frame(melt(hvgdata.metadata, id = c("names")))
+metadata.long$names <- factor(x = metadata.long$names,
+                               levels = rownames(hvgdata.scaled)[hvgdata.order], 
+                               ordered = TRUE)
+metadata.long$value <- factor(x = metadata.long$value,
+                               levels = c("22","43","70","AOMDSS","Ctrl","STD","GW3965",unique(metadata.long$variable[!(metadata.long$variable %in% c("d22","d43","d70","AOMDSS","Ctrl","STD","GW3965"))])), 
+                               ordered = TRUE)
+
+# Create heatmap plot
+heatmap.plot <- ggplot(data = hvgdata.long, aes(x = names, y = variable)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_gradient2(low = "#000088",high = "#880000", mid = "white") +
+  theme(axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "right",
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) + labs(fill = "Expression")
+
+# Create metadata heatmap plot
+metadata.heatmap.plot <- ggplot(data = metadata.long[metadata.long$variable %in% c("diet","day"),], aes(x = names, y = variable)) +
+  geom_tile(aes(fill = value)) +
+  scale_fill_ordinal() + 
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 12),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "right",
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        plot.background = element_blank()) + labs(fill = "Group")
+
+plot_grid(dendro.plot, metadata.heatmap.plot, heatmap.plot, ncol = 1, align = "v", axis = "lr", rel_heights = c(0.3,0.1,0.6))
+
+```
+
+
+
+# GSEA day 22
+
+## Ranking genes by fold-change
+
+Fold-change between diet groups is calculated by fitting the data to a linear model y ~ (day & diet) in edgeR. By examining the difference between the two diet groups at day 22, we retrieve a ranked list genes based on fold-change, which is used as input in the desktop GSEA tool.
+
+```{r}
+
+# Defining groups 
+groupstring <- paste(metadata$AOM_DSS, metadata$day, metadata$diet)
+groupstringlevels <- sort(unique(groupstring))
+group <- factor(groupstring, 
+                levels=groupstringlevels[c(grep("STD",groupstringlevels),
+                                           grep("GW3965",groupstringlevels))])
+
+# y_old = DGEList(counts=oldcounts,group=group)
+# keep_old <- filterByExpr(y_old)
+# y_old <- y_old[keep_old,,keep.lib.sizes=FALSE]
+# y_old <- calcNormFactors(y_old)
+# 
+# design <- model.matrix(~group)
+# 
+# y_old <- estimateDisp(y_old,design)
+# 
+
+y <- DGEList(counts=counts,group=group)
+keep <- filterByExpr(y)
+y <- y[keep,,keep.lib.sizes=FALSE]
+y <- calcNormFactors(y)
+
+design <- model.matrix(~group)
+
+y <- estimateDisp(y,design)
+
+# Fitting the data to the model
+
+fit <- glmQLFit(y,design)
+
+# fit_old <- glmQLFit(y_old,design)
+
+
+# Generating all desired comparisons
+
+compvars <- colnames(fit)
+
+qlf_diet_day22 <- glmQLFTest(fit,contrast = ((compvars == 
+                                                paste0("group", 
+                                                       "YES 22 GW3965"))*1) +
+                               ((compvars==paste0("group", "YES 22 STD"))*-1))
+
+# qlf_diet_day22_old <- glmQLFTest(fit_old,contrast = ((compvars == 
+#                                                 paste0("group", 
+#                                                        "YES 22 GW3965"))*1) +
+#                                ((compvars==paste0("group", "YES 22 STD"))*-1))
+
+
+
+write.table(file = "analysis/day22_GWvsDMSO_rankedlist.RNK", qlf_diet_day22$table[order(qlf_diet_day22$table$logFC),"logFC",drop=FALSE],col.names = FALSE, quote = FALSE, sep = "\t")
+
+
+
+```
+
+
+## Summarizing GSEA results
+
+```{r}
+
+loadGeneSets <- function(wd = getwd()){
+  if(file.exists(paste0(wd,"/tools/mouseKEGG.RData"))){
+    load(paste0(wd,"/tools/mouseKEGG.RData"),envir = .GlobalEnv)
+  }else{
+    mmupaths <- keggList("pathway",organism = "mmu")
+    
+    mmupathgenes <- list()
+    mmupathnames <- list()
+    
+    for(i in 1:length(mmupaths)){
+      mmupathgenes[[i]] <- keggGet(names(mmupaths)[i])[[1]]$GENE
+      mmupathnames[[i]] <- keggGet(names(mmupaths)[i])[[1]]$NAME
+    }
+    names(mmupathgenes) <- names(mmupaths)
+    names(mmupathnames) <- names(mmupaths)
+    
+    mmupathgenesclean <- list()
+    
+    for(i in 1:length(mmupathgenes)){
+      if(!is.null(mmupathgenes[[i]])){
+        mmupathgenesclean[[i]] <- mmupathgenes[[i]][seq(2,length(mmupathgenes[[i]]),2)]
+        mmupathgenesclean[[i]] <- gsub(";.*", "", mmupathgenesclean[[i]])
+      }
+    }
+    names(mmupathgenesclean) <- names(mmupathgenes)
+    
+    kegg_pathways <- mmupathgenesclean
+    names(kegg_pathways) <-  mmupathnames
+    
+    save(kegg_pathways, file = paste0(wd,"/tools/mouseKEGG.RData"))
+  }
+  
+  if(file.exists(paste0(wd,"/tools/mouseGOBP.RData"))){
+    load(paste0(wd,"/tools/mouseGOBP.RData"),envir = .GlobalEnv)
+  }else{
+    if(!require(KEGGREST)){
+      BiocManager::install("clusterProfiler")
+      library(clusterProfiler)
+    }
+    if(!require(org.Mm.eg.db)){
+      BiocManager::install("org.Mm.eg.db")
+      library(org.Mm.eg.db)
+    }
+    allgenes <- rownames(read.table("analysis_bulk/counts.tsv"))
+    
+    gobp_pathways_entrez <- list()
+    
+    goterms <- AnnotationDbi::Ontology(GO.db::GOTERM)
+    goterms <- goterms[goterms == "BP"]
+    
+    getGOLevel(names(goterms))
+    go2genes <- suppressMessages(AnnotationDbi::mapIds(org.Mm.eg.db, keys=names(goterms), column="SYMBOL",
+                          keytype="GOALL", multiVals='list'))
+    gobp_pathways_goID_all <- go2genes
+    
+    gobp_pathways_all <- gobp_pathways_goID_all
+    names(gobp_pathways_all) <- Term(GO.db::GOTERM)[match(names(go2genes), keys(GO.db::GOTERM))]
+    
+    presentgenes <- sapply(gobp_pathways, function(x){sum(!is.na(match(allgenes, x)))})
+    gobp_pathways_goID <- gobp_pathways_goID_all[presentgenes>3 & presentgenes < 3000]
+    gobp_pathways <- gobp_pathways_all[presentgenes>3 & presentgenes<3000]
+    
+    
+    
+    
+    
+    save(gobp_pathways, file = paste0(wd,"/tools/mouseGOBP.RData"))
+    save(gobp_pathways_goID, file = paste0(wd,"/tools/mouseGOBP_GOID.RData"))
+    save(gobp_pathways_all, file = paste0(wd,"/tools/mouseGOBP_all.RData"))
+    save(gobp_pathways_goID_all, file = paste0(wd,"/tools/mouseGOBP_GOID_all.RData"))
+  }
+  
+  pathways_list <- list(kegg_pathways, gobp_pathways)
+  names(pathways_list) <- c("KEGG","BP")
+  assign("pathways_list",pathways_list, envir = .GlobalEnv)
+}
+
+
+loadGeneSets()
+
+keggnames <- gsub(" - Mus musculus \\(mouse\\)","",names(pathways_list[["KEGG"]]))
+
+
+tableGraph <- function(sigRes){
+  
+  sigRes <- sigRes[order(sigRes$NES, decreasing = FALSE),]
+  sigRes <- sigRes[abs(sigRes$ES)>0.5,]
+  sigRes$showpathway <- gsub("\\.\\.\\.MUS.MUSCULUS\\.\\.MOUSE\\.","",sigRes$NAME)
+  sigRes$showpathway <- translator[match(sigRes$showpathway,translator[,1]),2]
+  
+  sigRes$showpathway <- factor(sigRes$showpathway,levels = sigRes$showpathway)
+  
+  g1 <- ggplot(sigRes, aes(y = showpathway, x = ES, fill = ES)) +
+    geom_bar(aes(x = NES), stat = "identity", fill = "#BBBBBB") + 
+    geom_bar(stat = "identity") +
+    theme_classic() +
+    scale_fill_gradient2(low = "#4b4bdb", high = "#db4b4b") +
+    theme(panel.grid.major.y = element_line(color = "grey", size = 0.1),
+          axis.line.y = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_line(color = "grey", size = 0.1),
+          axis.text = element_text(size = 8),
+          axis.title.x = element_text(size = 8),
+          legend.position = "none"
+    ) +
+    labs(x = "ES / NES")
+  g2 <- ggplot(sigRes, aes(y = showpathway, x = FDR.q.val)) + geom_point(size = 0.75) + 
+    theme_classic() +
+    scale_x_continuous(breaks = c(0,0.05), limits = c(0,0.05)) + #expand = expansion(mult = 1.05)) + 
+    theme(axis.line.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.text.x = element_text(size = 8),
+          axis.title.x = element_text(size = 8),
+          panel.grid.major.y = element_line(color = "grey", size = 0.1)) +
+    labs(x = "q-value")
+  return(list(g1,g2))
+}
+
+
+
+getFiles <- function(dir){
+  tsvfiles <- list.files(dir, pattern = "tsv$")
+  gseafiles <- tsvfiles[grep("gsea_report", tsvfiles)]
+  upfile <- gseafiles[grep("na_pos", gseafiles)]
+  downfile <- gseafiles[grep("na_neg", gseafiles)]
+  uptable <- read.table(paste0(dir, "/", upfile), sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  downtable <- read.table(paste0(dir, "/", downfile), sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  return(list(up = uptable, down = downtable))
+}
+
+
+log_tpm <- log2(tpm+1)
+  
+day22logFC <- getFiles("analysis/gsea_results")
+
+allPaths <- c(day22logFC[["up"]]$NAME,day22logFC[["down"]]$NAME)
+allPathnames <-gsub("\\.\\.\\.MUS.MUSCULUS\\.\\.MOUSE\\.","",allPaths)
+
+
+translator <- cbind(allPathnames,keggnames[match(gsub("\\.","-",tolower(allPathnames)), gsub("\\/","-",gsub(",","-",gsub("\\(","-",gsub("\\)","-",gsub(" ","-",tolower(keggnames)))))))])
+
+
+
+FDRlimit = 0.05
+ESlimit = 0
+
+returnSig <- function(gseaTable){
+  return(gseaTable$NAME[gseaTable$FDR.q.val<FDRlimit & abs(gseaTable$ES)>ESlimit])
+}
+
+day22up <- returnSig(day22logFC$up)
+day22down <- returnSig(day22logFC$down)
+
+
+plot_grid(tableGraph(rbind(day22logFC$up[match(day22up, day22logFC$up$NAME),1:11],
+                                     day22logFC$down[match(day22down, day22logFC$down$NAME),1:11]))[[1]],
+                    ncol = 1, align = "v")
+
+
+PPARday22 <- read.table("analysis/gsea_results/PPAR.SIGNALING.PATHWAY...MUS.MUSCULUS..MOUSE..tsv",
+                        sep="\t", stringsAsFactors = FALSE, header = TRUE)
+
+
+samples = which(metadata$AOM_DSS=="YES" & metadata$day=="22")
+genedf <- log_tpm[PPARday22$SYMBOL[PPARday22$CORE.ENRICHMENT=="Yes"],
+                  samples]
+
+logFCs <- qlf_diet_day22$table[order(qlf_diet_day22$table$logFC),"logFC",drop=FALSE][PPARday22$SYMBOL[PPARday22$CORE.ENRICHMENT=="Yes"],]
+names(logFCs) <- PPARday22$SYMBOL[PPARday22$CORE.ENRICHMENT=="Yes"]
+
+
+
+
+genedf <- genedf[!is.na(match(rownames(genedf),names(logFCs))),]
+fcorder <- order(match(rownames(genedf),names(sort(logFCs, decreasing = TRUE))))
+if(sum(logFCs>0)==0){fcorder <- rev(fcorder)}
+genedf <- genedf[fcorder,]
+
+hmdf <- t(apply(genedf[!is.na(genedf[,1]),],1,scale))
+hmdf <- hmdf[!is.nan(hmdf[,1]),]
+
+colnames(hmdf) <- colnames(genedf)
+
+bluewhitered <- colorRampPalette(c("#4b4bdb","white","#db4b4b"))(1000)
+colorscale <- bluewhitered[max(c(round((min(hmdf)/2+1)*500),0)):
+                             min(c(round((max(hmdf)/2+1)*500),1000))]
+
+
+
+maxFC = 5
+
+logFCs[logFCs>maxFC] <- maxFC
+logFCs[logFCs<(-maxFC)] <- -maxFC
+logFCAnnotColors <- colorRampPalette(c("white","white","#2f007e"))(301)[(round(min(logFCs[rownames(hmdf)], na.rm = TRUE),1)*(150/maxFC)+151):
+                                                         (round(max(logFCs[rownames(hmdf)], na.rm = TRUE),1)*(150/maxFC)+151)]
+phm <- pheatmap(hmdf, clustering_method = "ward.D2", cluster_rows = FALSE,
+         cluster_cols = TRUE,
+         annotation_colors = list(diet = c(GW3965 = "#bdc9e2",STD = "#dfdfde"),
+                                 logFC = logFCAnnotColors),
+         annotation_col = (metadata[match(colnames(genedf),
+                                                    rownames(metadata)),
+                                     "diet", drop = FALSE]),
+          
+         annotation_row = data.frame(logFC = round(logFCs, 1), row.names = names(logFCs)),
+        col = colorscale, show_colnames = FALSE, # border_color = "#CCCCCC",
+        #cex = ifelse(nrow(hmdf)>60,0.75,1),
+        main = "PPAR signaling pathway, day 22")
+
+
+
+```
+
+
+
+# Kinetic module analysis
+
+## Defining DE genes
+
+DE genes are defined using 
+
+y ~ day * diet + % ribosomal RNA
+
+```{r, echo=FALSE}
+
+
+metadata_withd0 <- metadata
+metadata_withd0$day <- factor(metadata_withd0$day, levels=c(0,22,43,70))
+metadata_withd0$day[metadata$AOM_DSS=="NO"] <- 0
+
+group <- paste(metadata_withd0$day, metadata_withd0$diet)
+y <- DGEList(counts=counts,group=group)
+keep <- filterByExpr(y)
+y <- y[keep,,keep.lib.sizes=FALSE]
+y <- calcNormFactors(y)
+day <- factor(metadata_withd0$day)
+diet <- factor(metadata_withd0$diet, levels=c("STD","GW3965"))
+perc_ribo <- metadata_withd0$perc_ribo
+
+
+design <- model.matrix(~day*diet+perc_ribo)
+
+y <- estimateDisp(y,design)
+
+# Fitting the data to the model
+
+fit <- glmQLFit(y,design)
+
+
+
+save(fit, file = paste0("analysis/fit_fullmodel.RData"))
+
+
+normCounts_uncorr <- log(as.data.frame(cpm(y))+1,2)
+normCounts <- removeBatchEffect(normCounts_uncorr, covariates = metadata_withd0[colnames(normCounts_uncorr),"perc_ribo",drop=FALSE])
+
+normCountsScaled <- as.data.frame(apply(normCounts, 1, scale))
+rownames(normCountsScaled) <- colnames(normCounts)
+normCountsScaled$Day <- factor(metadata_withd0[rownames(normCountsScaled),"day"])
+normCountsScaled$Diet <- factor(metadata_withd0[rownames(normCountsScaled),"diet"], 
+                                levels = c("STD","GW3965"))
+normCountsScaled$Sample <- rownames(normCountsScaled)
+
+
+
+
+daydiet_diet_lrt <- glmLRT(fit,coef = c(5,7:9))
+alllrt <- glmLRT(fit,coef = c(2:5,7:9))
+
+
+
+
+coeflist<- list(day22_STD =  "day22",day43_STD = "day43",
+                day70_STD = "day70",day0_GW3965 = "dietGW3965",
+                day22_GW3965 = c("day22","dietGW3965","day22.dietGW3965"),
+                day43_GW3965 = c("day43","dietGW3965","day43.dietGW3965"),
+                day70_GW3965 = c("day70","dietGW3965","day70.dietGW3965"))
+
+logFClist <- lapply(coeflist, 
+                    function(x){rowSums(alllrt$table[,paste0("logFC.",x), drop =FALSE])})
+allLogFCsunscaled <- as.data.frame(logFClist)
+allLogFCsunscaled$day0_STD <- 0
+allLogFCs <- as.data.frame(t(apply(allLogFCsunscaled,1, scale)))
+colnames(allLogFCs) <- colnames(allLogFCsunscaled)
+allLogFCswide <- allLogFCs
+allLogFCs$Gene <- rownames(allLogFCs)
+allLogFCs <- melt(allLogFCs, id = "Gene")
+allLogFCs$Day <- gsub("_.*","",allLogFCs$variable)
+allLogFCs$Diet <- gsub(".*_","",allLogFCs$variable)
+allLogFCs$Diet <- factor(allLogFCs$Diet, levels = c("STD","GW3965"))
+
+
+
+```
+
+
+
+```{r}
+
+
+### Functions for evaluation and visualization of modules
+
+keggbargraphs <- function(thisclustering, universe, pathways = kegg_pathways, nPaths = 15){
+  nclusters = max(thisclustering)
+  clustercolors = gg_color_hue(nclusters)
+  glist = list()
+  for(clusteri in 1:max(thisclustering)){
+    genes_cluster = names(thisclustering)[thisclustering == clusteri]
+    
+    kegg_cluster = NULL
+    while(is.null(kegg_cluster)){
+      kegg_cluster <- ownORA(genes_cluster, universe = universe, pathways = pathways)
+    }
+    
+    if(nrow(kegg_cluster)>0){
+      kegg_cluster <- kegg_cluster[order(kegg_cluster$Adjusted.P.value),]
+      #kegg_cluster[1:3,]
+      kegg_cluster <- kegg_cluster[ as.numeric(sub("[/].*","",kegg_cluster$Overlap)) >= 4 , ]
+      kegg_cluster <- kegg_cluster[ 1:nPaths , ]
+      
+      
+      
+      kegg_cluster$shortGenes <- lapply(kegg_cluster$Genes, 
+                                        function(x){paste(strsplit(x,";")[[1]][1:8][
+                                          !is.na(strsplit(x,";")[[1]][1:8])],
+                                                          collapse = ", ")})
+      notDone = TRUE
+      len = 28
+      while(length(unique(kegg_cluster$shortTerm[!is.na(kegg_cluster$shortTerm)]))!=
+            length(kegg_cluster$shortTerm[!is.na(kegg_cluster$shortTerm)]) | notDone){
+        kegg_cluster$shortTerm[!is.na(kegg_cluster$Term)] <-
+          sapply(as.character(kegg_cluster$Term)[!is.na(kegg_cluster$Term)], 
+                                        function(x){
+                                          if(nchar(x)>(len+2)){
+                                            x <- paste0(substr(gsub("positive","pos",
+                                                                    gsub("negative","neg",
+                                                                         gsub("regulation","reg",
+                                                                         x))),1,len),"...")}; 
+                                          return(x)})
+        len = len+1
+        notDone = FALSE
+      }
+    
+      if(!is.null(kegg_cluster$shortTerm)){
+        kegg_cluster$shortTerm <- factor(kegg_cluster$shortTerm,
+                                       levels = unique(rev(kegg_cluster$shortTerm)))
+      }else{
+        kegg_cluster$shortTerm <- NA
+      }
+      
+      {
+        b <- ggplot(kegg_cluster[1:sum(!is.na(kegg_cluster$Term)),],
+                    aes(x = -log10(Adjusted.P.value), 
+                                             y = shortTerm)) + 
+          geom_bar(stat ="identity", fill = clustercolors[clusteri]) + 
+          theme_classic() + 
+          theme(axis.line = element_blank(), axis.title.y = element_blank()) +
+          labs(title = paste0("Module ",clusteri," (",length(genes_cluster)," genes)")) + 
+          geom_vline(xintercept = -log10(0.05), linetype = "dashed", color = "#BBBBBB") +
+          geom_text(x = 0, 
+                    aes(label = paste0(" ",Overlap,": ",shortGenes)), 
+                    hjust = 0, size = 3) + 
+          xlim(c(0, max(5,max(-log10(kegg_cluster[1:nPaths,"Adjusted.P.value"]), na.rm = TRUE))))
+      }
+    }
+    glist <- c(glist,list(b))
+  }
+  return(glist)
+}
+
+
+
+arrangePlots <- function(gl, nr=2, nc=3, nplots = nr*nc, ...){
+  for(i in seq(1,length(gl), nplots)){
+    grid.arrange(grobs = gl[i:min(c((i+nplots-1), length(gl)))], ncol = nc, 
+                 nrow = nr, ...)
+  }
+}
+
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+
+ownORA <- function(genelist, pathways, universe){
+  
+  ### Adapted from enricher_internal from DOSE
+  
+  intersects <- list()
+  for(i in 1:length(pathways)){
+    intersects[[i]] <- list(intersect(pathways[[i]], genelist),intersect(pathways[[i]], universe))
+  }
+  names(intersects) <- names(pathways)
+  args.df <- data.frame(numWdrawn = sapply(intersects,function(x){length(x[[1]])})-1, ## White balls drawn
+                        numW = sapply(intersects,function(x){length(x[[2]])}),        ## White balls
+                        numB = length(unique(universe))-sapply(intersects,function(x){length(x[[2]])}),               ## Black balls
+                        numDrawn = length(genelist))                        ## balls drawn
+  rownames(args.df) <- names(pathways)
+  args.df <- args.df[args.df[,2]>3,]
+  
+  pvalues <- apply(args.df, 1, function(n)
+    phyper(n[1], n[2], n[3], n[4], lower.tail=FALSE)
+  )
+  terms = rownames(args.df)
+  overlaps = paste(args.df[,1]+1,args.df[,2],sep="/")
+  #Term Overlap   P.value Adjusted.P.value     Genes
+  adjpvalues = p.adjust(pvalues, method = "BH")
+  genes = lapply(intersects[rownames(args.df)],function(x){paste(x[[1]], collapse=";")})
+  res <- data.frame(Term = terms,
+             Overlap = overlaps,
+             P.value = pvalues,
+             Adjusted.P.value = adjpvalues,
+             Genes = unlist(genes),
+             row.names = NULL,
+             stringsAsFactors = FALSE)
+  return(res)
+}
+
+
+
+```
+
+
+```{r}
+
+toplist <- topTags(daydiet_diet_lrt, n = nrow(daydiet_diet_lrt))
+allgenes <- rownames(toplist$table)[toplist$table$FDR<0.05 ]
+#allgenes <- rownames(toplist$table)[toplist$table$FDR<0.05 & minfdrdiet[rownames(toplist$table)]<0.2]
+logFCs = allLogFCswide[allgenes,order(colnames(allLogFCswide))]
+
+load("/Users/jenfra/LocalWork/repos/e_villablanca_2005/analysis_bulk/modules/allgroups_dietgenes_cth20_ribo.RData")
+clustering_old = clustering
+
+
+logFCs_scaled <- t(apply(logFCs[apply(logFCs, 1, sd)!=0,],1,scale))
+colnames(logFCs_scaled) <- colnames(logFCs)
+distance <- dist(logFCs_scaled, method = "euclidean")
+clustering_ <- hclust(distance, method = "ward.D2")
+ct <- cutree(clustering_, h =20)
+clustering <- match(ct,unique(ct[clustering_$order]))
+names(clustering) <- names(ct)
+
+save(clustering, file = "analysis/dietmodules.RData")
+
+
+table(clustering[intersect(names(clustering), names(clustering_old))],
+      clustering_old[intersect(names(clustering), names(clustering_old))])
+
+
+barplots <- keggbargraphs(thisclustering = clustering, universe = rownames(toplist))
+gobpbarplots <- keggbargraphs(thisclustering = clustering, universe = rownames(toplist),
+                              pathways = gobp_pathways)
+
+
+
+
+```
+
+
+## Diet-based modules (gene and sample variability)
+
+```{r, results=FALSE}
+
+
+
+nclusters = max(clustering)
+clustercolors = gg_color_hue(nclusters)
+
+
+
+clusters <- data.frame(clustering)
+
+
+clusters$clustering <- factor(clusters$clustering)
+n = max(as.numeric(clusters[,1]))
+hues = seq(n, 375, length = n + 1)
+colortranslator = hcl(h = hues, l = 65, c = 100)[1:n]
+names(colortranslator) <- 1:n
+
+cols = gg_color_hue(max(clustering))
+
+
+
+
+pheatmap(logFCs_scaled[names(sort(clustering)),],
+         cluster_rows = FALSE, show_rownames = FALSE,
+         cluster_cols = FALSE,gaps_row = which(sort(clustering) !=
+                                                 sort(clustering)[c(2:length(clustering),1)]),
+         color = colorRampPalette(c("#0000CC","#FFFFFF","#CC0000"))(100))
+
+
+
+
+
+toPlot <- as.data.frame(logFCs_scaled)
+toPlot$Gene <-  rownames(logFCs_scaled)
+
+toPlotLong <- melt(toPlot, id = "Gene")
+toPlotLong$Cluster <- factor(clusters[toPlotLong$Gene,1], c(sort(unique(clusters[,1])),16))
+toPlotLong$Cluster[is.na(toPlotLong$Cluster)] <- 16
+
+groupOrder = c("day0_STD", "day22_STD",  "day43_STD", "day70_STD",
+               "day0_GW3965", "day22_GW3965", "day43_GW3965", "day70_GW3965")
+toPlotLong$variable = factor(toPlotLong$variable, levels = groupOrder)
+toPlotLong$Diet = factor(gsub(".*_","",toPlotLong$variable),levels = c("STD","GW3965"))
+toPlotLong$Day = factor(gsub("_.*","",toPlotLong$variable))
+
+nclusters = max(as.numeric(clusters[,1]))
+clustercolors = c(gg_color_hue(nclusters),"#BBBBBB")
+
+#### Plots with individual gene changes
+
+logFCplots = list()
+allLogFCs_ <- allLogFCs
+allLogFCs_$Cluster <- clustering[allLogFCs$Gene]
+
+for(i in 1:max(clustering)){
+  g <- ggplot(allLogFCs_[allLogFCs_$Cluster %in% i,], aes(x = as.numeric(as.factor(Day)),
+                                                      y = value)) +
+    geom_line(alpha = 0.1, aes(group = paste(Gene,Diet), color = Diet)) +
+    geom_smooth(aes(group = paste(Diet)), color = "black",  
+                method = "loess", formula = 'y~x', size = 2.2) +
+    geom_smooth(aes(color = Diet),  method = "loess", formula = 'y~x', 
+                size = 2, alpha = 0) +
+    theme(axis.title = element_blank(),
+          plot.title = element_text(hjust = 0.5), 
+          panel.border = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          #axis.ticks.y = element_blank(),
+          #axis.text.y = element_blank(),
+          panel.background = element_blank(),
+          legend.key = element_blank()) + 
+    scale_x_continuous(labels=sort(unique(allLogFCs_$Day))) + 
+    labs(title= paste("Module",i))
+  logFCplots <- c(logFCplots, list(g))
+}
+
+#### Plots with average gene changes
+
+glistdietstraight = list()
+for(i in 1:max(clustering)){
+  
+  yminval = abs(min(toPlotLong$value[toPlotLong$Cluster==i ]))
+  g <- ggplot(toPlotLong[toPlotLong$Cluster==i,], aes(x = as.numeric(Day),
+                                                              y = value + yminval)) +
+    theme(axis.title = element_blank(), 
+          panel.border = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          #axis.ticks.y = element_blank(),
+          #axis.text.y = element_blank(),
+          panel.background = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1)) + 
+    scale_x_continuous(labels=sort(unique(toPlotLong$Day)), breaks = 1:length(unique(toPlotLong$Day))) +
+    stat_summary(data =toPlotLong[toPlotLong$Cluster==i & toPlotLong$Diet=="STD",], 
+                 aes(group = Diet), geom="area", fill = clustercolors[i]) +
+    stat_summary(aes(group=Diet, linetype = Diet), fun=mean,  geom="line") +
+    stat_summary(aes(group = Diet), geom="errorbar", width=0.1) +
+    scale_y_continuous(expand = expansion(mult = c(0.1,0.2))) +
+    ggpubr::stat_compare_means(aes(group = Diet), label = "p.signif")
+  
+  glistdietstraight[[length(glistdietstraight)+1]] <- g
+}
+
+
+#### Plots with individual sample averages
+
+
+glisterrort = list()
+
+for(i in 1:max(clustering)){
+  clustertpms <- normCountsScaled[,c(names(clustering)[clustering==i],
+                                     "Day","Diet","Sample")]
+  
+  clustertpmlong <- melt(clustertpms, id = c("Day","Diet", "Sample"))
+  clustermeans <- aggregate(clustertpmlong$value,
+                            by =list(clustertpmlong$Day,
+                                     clustertpmlong$Diet,
+                                     clustertpmlong$Sample),
+                            mean)
+  colnames(clustermeans) <- c("Day","Diet","Sample","value")
+  
+  
+  g <- ggplot(clustermeans,
+              aes(x = as.numeric(as.factor(Day)), y = value)) +
+    #geom_smooth(aes(color = paste(Diet)), 
+    #            method = "loess", formula = 'y~x', size = 1, alpha = 0.2) +
+    geom_point(aes(fill = Diet),
+               pch = 21, position=position_dodge(width = 0.5))  +
+    
+    theme(axis.title = element_blank(),
+          plot.title = element_text(hjust = 0.5), 
+          panel.border = element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(),
+          #axis.ticks.y = element_blank(),
+          #axis.text.y = element_blank(),
+          panel.background = element_blank(),
+          legend.key = element_blank()) + 
+    scale_x_continuous(labels=sort(unique(clustertpmlong$Day)),
+                       breaks = 1:length(unique(clustertpmlong$Day))) +
+    scale_y_continuous(expand = expansion(mult = c(0.1,0.25))) + 
+    scale_fill_manual(values=c(GW3965 = "#1f538d", STD="#dfdfde")) +
+    stat_summary(aes(group =Diet),geom="errorbar", position = position_dodge(width = 0.5),width = 0.1) +
+    ggpubr::stat_compare_means(aes(group = Diet),label = "p.signif", method = "t.test", paired = TRUE,
+                               hide.ns = TRUE, label.y = max(clustermeans$value)*1.1)
+  #stat_compare_means(aes(group = Diet, label = paste0("p =", ..p.format..))) +
+  #labs(title= paste("Module",i))
+  glisterrort[[i]] <- g
+}
+
+### Combining and showing plots
+
+combinedlist <- list()
+for(i in 1:nclusters){
+  kegggobp <- rbind(gobpbarplots[[i]]$data[1:min(c(5,nrow(gobpbarplots[[i]]$data))),],
+        barplots[[i]]$data[1:min(c(5,nrow(barplots[[i]]$data))),])
+  kg <- ggplot(kegggobp,
+                    aes(x = -log10(Adjusted.P.value), 
+                                             y = shortTerm)) + 
+          #geom_vline(xintercept = -log10(0.05),  color = "black") +
+          geom_bar(stat ="identity", fill = clustercolors[i]) + 
+          theme_classic() + 
+          theme(axis.line = element_blank(), axis.title.y = element_blank()) +
+          geom_vline(xintercept = -log10(0.05), linetype = "dashed", color = "#BBBBBB") +
+          geom_text(x = 0, 
+                    aes(label = paste0(" ",Overlap,": ",shortGenes)), 
+                    hjust = 0, size = 3) + 
+          xlim(c(0, max(5,max(-log10(kegggobp[,"Adjusted.P.value"]), na.rm = TRUE))))
+  tg <- textGrob(paste0("Module ",i,": ",table(clustering)[i]," genes"))
+  combinedlist <- c(combinedlist, list(tg), 
+                    list(logFCplots[[i]] + theme(plot.title = element_blank(), legend.position = "bottom")),
+                    list(glistdietstraight[[i]] + theme(plot.title = element_blank(), legend.position = "bottom")),
+                    list(glisterrort[[i]] + theme(plot.title = element_blank(), legend.position = "bottom")),
+                    list(kg))
+}
+arrangePlots(gl = combinedlist, nc = 4, nr = 4, widths = c(0.7,0.7,0.7,1), 
+             layout_matrix = rbind(1,c(2,3,4,5),6,c(7,8,9,10)), 
+             heights = c(0.2,1,0.2,1), nplots = 10)
+
+
+
+
+```
+
+## Effect of degradation on modules
+
+```{r}
+
+
+
+
+glist=list()
+for(i in 1:max(clustering)){
+  clustertpms <- normCountsScaled[,c(names(clustering)[clustering==i],
+                                 "Day","Diet","Sample")]
+    
+    clustertpmlong <- melt(clustertpms, id = c("Day","Diet", "Sample"))
+    clustermeans <- aggregate(clustertpmlong$value,
+                              by =list(clustertpmlong$Day,
+                                       clustertpmlong$Diet,
+                                       clustertpmlong$Sample),
+      mean)
+    colnames(clustermeans) <- c("Day","Diet","Sample","value")
+    clustermeans$RibosomalRNA <- metadata[clustermeans$Sample,"perc_ribo"]
+   
+    g <- ggplot(clustermeans,
+                aes(x = RibosomalRNA, y = value)) +
+      geom_point(aes(color = Diet, shape = Day)
+                 )  +
+      
+      theme(axis.title.y = element_blank(),
+            plot.title = element_text(hjust = 0.5), 
+            panel.border = element_blank(),
+            panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            #axis.ticks.y = element_blank(),
+            #axis.text.y = element_blank(),
+            panel.background = element_blank(),
+            legend.key = element_blank(),
+            legend.position = "none") + 
+      #stat_compare_means(aes(group = Diet, label = paste0("p =", ..p.format..))) +
+      labs(title= paste("Module",i))
+    glist <- c(glist, list(g))
+}
+
+ggarrange(plotlist = glist, ncol=3, nrow=2, common.legend = TRUE, legend="top")
+
+
+glist=list()
+for(i in 1:max(clustering)){
+  clustertpms <- normCountsScaled[,c(names(clustering)[clustering==i],
+                                 "Day","Diet","Sample")]
+    
+    clustertpmlong <- melt(clustertpms, id = c("Day","Diet", "Sample"))
+    clustermeans <- aggregate(clustertpmlong$value,
+                              by =list(clustertpmlong$Day,
+                                       clustertpmlong$Diet,
+                                       clustertpmlong$Sample),
+      mean)
+    colnames(clustermeans) <- c("Day","Diet","Sample","value")
+    clustermeans$RIN <- metadata[clustermeans$Sample,"RIN_values"]
+   
+    g <- ggplot(clustermeans,
+                aes(x = RIN,  y = value)) +
+      geom_point(aes(color = Diet, shape = Day)
+                 )  +
+      
+      theme(axis.title.y = element_blank(),
+            plot.title = element_text(hjust = 0.5), 
+            panel.border = element_blank(),
+            panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            #axis.ticks.y = element_blank(),
+            #axis.text.y = element_blank(),
+            panel.background = element_blank(),
+            legend.key = element_blank(),
+            legend.position = "none") + 
+      #stat_compare_means(aes(group = Diet, label = paste0("p =", ..p.format..))) +
+      labs(title= paste("Module",i))
+    glist <- c(glist, list(g))
+}
+
+ggarrange(plotlist = glist, ncol=3, nrow=2, common.legend = TRUE, legend="top")
+
+
+
+
+
+
+```
+
+## Pathway contributions to modules
+
+```{r}
+
+alltop5GO = list()
+alltop5KEGG = list()
+
+for(i in 1:length(gobpbarplots)){
+  top5GO = gobpbarplots[[i]]$data[1:min(c(5,nrow(gobpbarplots[[i]]$data))),]
+  top5KEGG = barplots[[i]]$data[1:min(c(5,nrow(barplots[[i]]$data))),]
+  top5GO = top5GO[top5GO$Adjusted.P.value<0.05,]
+  top5KEGG = top5KEGG[top5KEGG$Adjusted.P.value<0.05,]
+  if(!is.na(top5GO$Term[1])){
+    for(j in 1:nrow(top5GO)){
+      if(!is.null(alltop5GO[[top5GO$Term[j]]])){
+        alltop5GO[[top5GO$Term[j]]] = c(alltop5GO[[top5GO$Term[j]]], i)
+      }else{
+        alltop5GO[[top5GO$Term[j]]] = i
+      }
+     
+    }
+  }
+  
+  if(!is.na(top5KEGG$Term[1])){
+    for(j in 1:nrow(top5KEGG)){
+      if(!is.null(alltop5KEGG[[top5KEGG$Term[j]]])){
+        alltop5KEGG[[top5KEGG$Term[j]]] = c(alltop5KEGG[[top5KEGG$Term[j]]], i)
+      }else{
+        alltop5KEGG[[top5KEGG$Term[j]]] = i
+      }
+     
+    }
+  }
+  
+}
+
+
+
+allmods <- c(alltop5GO, alltop5KEGG)
+
+
+pathways <- c(kegg_pathways[names(alltop5KEGG)],gobp_pathways[names(alltop5GO)])
+pathways <- pathways[order(sapply(allmods,min))]
+
+
+tNormCountsScaledPathways <- normCountsScaled[,c(unique(unlist(pathways)[!is.na(match(unlist(pathways),
+                                                                            colnames(normCountsScaled)))]),"Day","Diet","Sample")]
+normCountsScaledPathways <- t(tNormCountsScaledPathways[,-((ncol(tNormCountsScaledPathways)-2):ncol(tNormCountsScaledPathways))])
+
+
+gliststraightpaired = list()
+for(m in sort(unique(unlist(allmods)))){
+  for(iname in names(allmods)[grep(m, allmods)]){
+    i = intersect(pathways[[iname]],names(clustering)[clustering == m])
+    g <- ggplot(toPlotLong[toPlotLong$Gene %in% i,], aes(x = as.numeric(Day),
+                                                         y = value)) +
+      theme(axis.title = element_blank(),
+            panel.border = element_blank(),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(),
+            panel.background = element_blank(),
+            plot.title = element_text(size = 8,hjust = 0)
+      ) + 
+      scale_x_continuous(labels=gsub("ay","",sort(unique(toPlotLong$Day))), breaks = 1:length(unique(toPlotLong$Day))) + 
+      labs(title = paste(gsub(" - Mus musculus \\(mouse\\)","",iname), "\nmodule", m)) + 
+      stat_summary(aes(group=Diet, linetype = Diet, color = Diet), fun=mean,  geom="line") +
+      stat_summary(aes(group = Diet), geom="errorbar", width=0.1) +
+      ggpubr::stat_compare_means(aes(group = Diet), label = "p.signif", paired = TRUE,
+                                 label.y = max(aggregate(toPlotLong[toPlotLong$Gene %in% i,]$value, by= 
+                                                           list(toPlotLong[toPlotLong$Gene %in% i,]$Diet,
+                                                                toPlotLong[toPlotLong$Gene %in% i,]$Day),
+                                                         mean)$x)*1.1) +
+      scale_color_manual(values=c(GW3965="red",STD="black")) +
+      scale_y_continuous(expand = expansion(mult = c(0.1,0.2)))
+    
+    gliststraightpaired[[as.character(m)]][[length(gliststraightpaired[[as.character(m)]])+1]] <- g
+    
+  }
+}
+
+
+
+glistmoduleerrort_smaller = list()
+
+for(m in sort(unique(unlist(allmods)))){
+  for(iname in names(allmods)[grep(m, allmods)]){
+    i = intersect(intersect(pathways[[iname]],names(clustering)[clustering == m]),colnames(tNormCountsScaledPathways))
+    
+    clustertpms <- tNormCountsScaledPathways[,c(i,
+                                                "Day","Diet","Sample")]
+    
+    clustertpmlong <- melt(clustertpms, id = c("Day","Diet", "Sample"))
+    clustermeans <- aggregate(clustertpmlong$value,
+                              by =list(clustertpmlong$Day,
+                                       clustertpmlong$Diet,
+                                       clustertpmlong$Sample),
+                              mean)
+    colnames(clustermeans) <- c("Day","Diet","Sample","value")
+    
+    
+    g <- ggplot(clustermeans,
+                aes(x = as.numeric(as.factor(Day)), y = value)) +
+      geom_quasirandom(aes(fill = Diet),
+                       pch = 21, dodge.width = 0.75, size = 1)  +
+      scale_fill_manual(values = c(GW3965 = "#1f538d",STD = "#dfdfde")) + 
+      
+      theme(axis.title = element_blank(),
+            axis.line = element_line(),
+            plot.title = element_text(hjust = 0, size = 8), 
+            panel.border = element_blank(),
+            panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            #axis.ticks.y = element_blank(),
+            #axis.text.y = element_blank(),
+            panel.background = element_blank(),
+            legend.key = element_blank()) + 
+      scale_x_continuous(labels=sort(unique(clustertpmlong$Day)),
+                         breaks = 1:length(unique(clustertpmlong$Day))) +
+      #stat_compare_means(aes(group = Diet, label = paste0("p =", ..p.format..))) +
+      labs(title= paste(gsub(" - Mus musculus \\(mouse\\)","",iname), "\nmodule",m)) +
+      stat_summary(aes(group =Diet),geom="errorbar", position = position_dodge(width = 0.75), width = 0.3) +
+      ggpubr::stat_compare_means(aes(group = Diet), label = "p.signif", method = "t.test", label.y = max(clustermeans$value)*1.2) +
+      scale_y_continuous(expand = expansion(mult = c(0.1,0.2)))
+    glistmoduleerrort_smaller[[as.character(m)]][[length(glistmoduleerrort_smaller[[as.character(m)]])+1]] <- g
+  }
+  #grid.arrange(grobs = glist)
+}
+
+
+newlist <- list()
+for(m in names(gliststraightpaired)){
+  for(i in 1:length(gliststraightpaired[[m]])){
+    newlist[[m]] <- c(newlist[[m]], lapply(list(gliststraightpaired[[m]][[i]],glistmoduleerrort_smaller[[m]][[i]]), 
+                                 function(x){x + labs() + theme(axis.text.y = element_blank(),
+                                                       axis.ticks.y = element_blank(),
+                                                       legend.position = "none",
+                                                       plot.title=element_text(size = 8)) +
+                                     coord_cartesian(clip="off")
+                                 }))
+  }
+}
+
+newlist[[m]] = c(newlist[[m]], list(as_ggplot(get_legend(newlist[[m]][[1]]+ theme(legend.position = "right"))),as_ggplot(get_legend(newlist[[m]][[2]]+ theme(legend.position = "right")))))
+
+for(m in names(newlist)){
+  arrangePlots(newlist[[m]], nr = 2, nc = 4)
+}
+
+
+
+```
+
+
+```{r}
+
+modvar = as.data.frame(matrix(ncol = 4, nrow = length(unlist(allmods))))
+samvar = as.data.frame(matrix(ncol = 4, nrow = length(unlist(allmods))))
+moddiff = as.data.frame(matrix(ncol = 4, nrow = length(unlist(allmods))))
+samdiff = as.data.frame(matrix(ncol = 4, nrow = length(unlist(allmods))))
+
+colnames(modvar) = colnames(moddiff) = sort(unique(c("day0", "day22", "day43", "day70")))
+colnames(samvar) = colnames(samdiff) = sort(unique(c("0", "22", "43", "70")))
+rownames(samvar) = rownames(modvar) = rownames(moddiff) = rownames(samdiff) = unlist(lapply(1:length(allmods), function(x){paste(names(allmods)[x],allmods[[x]])}))[order(unlist(allmods))]
+
+
+for(m in sort(unique(unlist(allmods)))){
+  for(iname in names(allmods)[grep(m, allmods)]){
+    
+    i = intersect(pathways[[iname]],names(clustering)[clustering == m])
+    
+    modpath = toPlotLong[toPlotLong$Gene %in% i,]
+    
+    for(day in unique(modpath$Day)){
+      daymp = modpath[modpath$Day==day,]
+      wt = wilcox.test(daymp$value~daymp$Diet, paired = TRUE)
+      modvar[paste(iname, m),day] = wt$p.value
+    }
+    modpathmeans = aggregate(modpath$value, by = list(modpath$Day, modpath$Diet, modpath$variable), mean)
+    for(day in unique(modpath$Day)){
+      moddiff[paste(iname, m),day] = modpathmeans[modpathmeans$Group.1 == day & modpathmeans$Group.2 == "GW3965","x"] -
+        modpathmeans[modpathmeans$Group.1 == day & modpathmeans$Group.2 == "STD","x"]
+    }
+    
+    
+    
+    clustertpms <- tNormCountsScaledPathways[,c(i,
+                                                "Day","Diet","Sample")]
+    
+    clustertpmlong <- melt(clustertpms, id = c("Day","Diet", "Sample"))
+    clustermeans <- aggregate(clustertpmlong$value,
+                              by =list(clustertpmlong$Day,
+                                       clustertpmlong$Diet,
+                                       clustertpmlong$Sample),
+                              mean)
+    colnames(clustermeans) <- c("Day","Diet","Sample","value")
+    
+    for(day in sort(unique(clustermeans$Day))){
+      daycm = clustermeans[clustermeans$Day==day,]
+      tt = t.test(daycm$value~daycm$Diet)
+      samvar[paste(iname, m),day] = tt$p.value
+      daycmmean = aggregate(daycm$value, by=list(daycm$Diet), mean)
+      samdiff[paste(iname, m),day] = daycmmean[daycmmean$Group.1 == "GW3965","x"] - daycmmean[daycmmean$Group.1 == "STD","x"]
+    }
+  }
+}
+
+moddiff$pathmod = rownames(moddiff)
+modvar$pathmod = rownames(modvar)
+ps = melt(modvar)
+colnames(ps)[3] = "p_value"
+ps$p_value[ps$p_value<0.001] = 1000
+ps$p_value[ps$p_value<0.01] = 100
+ps$p_value[ps$p_value<0.05] = 10
+ps$p_value[ps$p_value<2] = ""
+ps$p_value[ps$p_value==10] = "*"
+ps$p_value[ps$p_value==100] = "**"
+ps$p_value[ps$p_value==1000] = "***" 
+
+ggplot(merge(melt(moddiff),ps), aes(y = factor(pathmod, levels = rev(moddiff$pathmod)), x = variable, fill = value)) + geom_tile() +
+  geom_text(aes(label = p_value), vjust = 0.7) +
+  scale_fill_gradientn(limits = c(-max(abs(moddiff[,1:4])),max(abs(moddiff[,1:4]))),
+                       colors=c("navyblue","white","firebrick")) + theme(panel.background = element_blank())
+
+keggonly = merge(melt(moddiff),ps)
+keggonly = keggonly[grep("Mus musculus",keggonly$pathmod),]
+ggplot(keggonly, aes(y = factor(pathmod, levels = rev(moddiff$pathmod)), x = variable, fill = value)) + geom_tile() +
+  geom_text(aes(label = p_value), vjust = 0.7) +
+  scale_fill_gradientn(limits = c(-max(abs(keggonly$value)),max(abs(keggonly$value))),
+                       colors=c("navyblue","white","firebrick")) +theme(panel.background = element_blank())
+
+
+
+samdiff$pathmod = rownames(samdiff)
+samvar$pathmod = rownames(samvar)
+ps = melt(samvar)
+colnames(ps)[3] = "p_value"
+ps$p_value[ps$p_value<0.001] = 1000
+ps$p_value[ps$p_value<0.01] = 100
+ps$p_value[ps$p_value<0.05] = 10
+ps$p_value[ps$p_value<2] = ""
+ps$p_value[ps$p_value==10] = "*"
+ps$p_value[ps$p_value==100] = "**"
+ps$p_value[ps$p_value==1000] = "***" 
+
+ggplot(merge(melt(samdiff),ps), aes(y = factor(pathmod, levels = rev(samdiff$pathmod)), x = variable, fill = value)) + geom_tile() +
+  geom_text(aes(label = p_value), vjust = 0.7) +
+  scale_fill_gradientn(limits = c(-max(abs(samdiff[,1:4])),max(abs(samdiff[,1:4]))),
+                       colors=c("navyblue","white","firebrick")) +theme(panel.background = element_blank())
+
+
+
+keggonly = merge(melt(samdiff),ps)
+keggonly = keggonly[grep("Mus musculus",keggonly$pathmod),]
+ggplot(keggonly, aes(y = factor(pathmod, levels = rev(samdiff$pathmod)), x = variable, fill = value)) + geom_tile() +
+  geom_text(aes(label = p_value), vjust = 0.7) +
+  scale_fill_gradientn(limits = c(-max(abs(keggonly$value)),max(abs(keggonly$value))),
+                       colors=c("navyblue","white","firebrick")) + theme(panel.background = element_blank())
+
+
+```
