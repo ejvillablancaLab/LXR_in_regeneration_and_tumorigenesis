@@ -1,0 +1,308 @@
+---
+title: "LXR irradiation scRNAseq Visium results"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE, 
+                      echo = knitr::is_html_output())
+
+
+```
+
+```{r}
+library(Seurat)
+library(Matrix)
+library(future)
+library(future.apply)
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(grid)
+
+getGenePlots = function(gene, imgalpha = 0, qmax = NULL, topcolor = "#FF0000", lowcolor = "#FFFFFF", pt.alpha = 1){
+  g = SpatialFeaturePlot(DATA, gene, stroke = NA, combine = FALSE, image.alpha = imgalpha, alpha = pt.alpha)
+  
+  if(!is.null(qmax)){
+    qval = quantile(do.call("rbind",lapply(g,function(x){x$data}))[,3],qmax)
+    g = SpatialFeaturePlot(DATA, gene, stroke = NA, combine = FALSE, image.alpha = imgalpha, max.cutoff = qval, alpha = pt.alpha)
+  }
+  
+  if(imgalpha == 0){
+    g = lapply(g, function(x){x + theme(panel.background = element_rect(fill = "#CCCCCC"), panel.grid = element_blank())})
+  }
+  genemax = max(do.call("rbind",lapply(g,function(x){x$data}))[,3])
+  sfill = scale_fill_gradient(limits = c(0,genemax), low = lowcolor, high = topcolor)
+  
+  return(lapply(g,function(x){x + sfill}))
+}
+
+plotGene = function(gene, imgalpha = 0, extratext = NULL,qmax = NULL, topcolor = "#FF0000", lowcolor = "#FFFFFF", pt.alpha = 1){
+  g = getGenePlots(gene = gene, imgalpha = imgalpha, qmax = qmax, topcolor = topcolor, lowcolor = lowcolor, pt.alpha = pt.alpha)
+  
+  return(plot_grid(get_legend(g[[1]]), plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend()})), ncol = 4), textGrob(extratext), ncol = 1, rel_heights = c(0.2,0.9,0.3)))
+  
+}
+
+plotGeneColoc = function(gene1 , gene2, extratext = NULL,qmax = NULL){
+  g1 = SpatialFeaturePlot(DATA, gene1, stroke = NA, combine = FALSE, image.alpha = 0)
+  g1 = lapply(g1, function(x){colnames(x$data)[3] = gene1; return(x)})
+  
+  if(!is.null(qmax)){
+    qval = quantile(do.call("rbind",lapply(g1,function(x){x$data}))[,gene1],qmax)
+    g1 = SpatialFeaturePlot(DATA, gene1, stroke = NA, combine = FALSE, image.alpha = 0, max.cutoff = qval)
+    g1 = lapply(g1, function(x){colnames(x$data)[3] = gene1; return(x)})
+  }
+  
+  g2 = SpatialFeaturePlot(DATA, gene2, stroke = NA, combine = FALSE, image.alpha = 0)
+  g2 = lapply(g2, function(x){colnames(x$data)[3] = gene2; return(x)})
+  
+  if(!is.null(qmax)){
+    qval = quantile(do.call("rbind",lapply(g2,function(x){x$data}))[,gene2],qmax)
+    g2 = SpatialFeaturePlot(DATA, gene2, stroke = NA, combine = FALSE, image.alpha = 0, max.cutoff = qval)
+    g2 = lapply(g2, function(x){colnames(x$data)[3] = gene2; return(x)})
+  }
+  
+  colors = lapply(1:length(g1),function(x){rgb(g1[[x]]$data[,gene1]/max(g1[[x]]$data[,gene1]),g2[[x]]$data[,gene2]/max(g2[[x]]$data[,gene2]),0)})
+  
+  g = lapply(1:length(g1), function(x){
+    #g1[[x]]$data[,3] = as.factor(rownames(g1[[x]]$data))
+    g1[[x]]$data$cell = as.factor(rownames(g1[[x]]$data))
+    names(colors[[x]]) = rownames(g1[[x]]$data)
+    g1[[x]]$mapping$fill = g1[[x]]$data$cell
+    g1[[x]] + scale_fill_manual(values = colors[[x]]) + NoLegend()
+  })
+  
+  
+  l1 = get_legend(ggplot(do.call("rbind",lapply(g1,function(x){x$data})),aes_string(fill = gene1)) +
+                    geom_point(x = 1, y = 2) + 
+               scale_fill_gradient(low = "black",high="red") + theme(legend.position = "bottom"))
+  l2 = get_legend(ggplot(do.call("rbind",lapply(g2,function(x){x$data})),aes_string(fill = gene2)) + 
+                    geom_point(x = 1, y = 2) + 
+               scale_fill_gradient(low = "black",high="green") + theme(legend.position = "bottom"))
+  
+  return(plot_grid(plot_grid(l1,l2), 
+                   plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend()})), ncol = 4),
+                   ncol = 1, rel_heights = c(0.2,0.9,0.3)))
+  
+}
+
+
+```
+
+# Load data
+
+
+```{r}
+
+DATA = readRDS("Visium_dataset_irradiation.rds")
+
+DATA$orig.ident = factor(DATA$orig.ident, 
+                         levels = c("STD_irrad0", "GW_irrad0",
+                                    "STD_irrad3", "GW_irrad3"))
+
+```
+
+
+# H&E images
+
+To reduce file size, the H&E images have been removed from most plots. The images are shown here and can easily be combined with the spatial plots in e.g. Affinity.
+
+```{r, fig.height = 3}
+
+
+g = SpatialFeaturePlot(DATA, "Abca1", stroke = NA, combine = FALSE, alpha = 0)
+
+print(plot_grid(NULL,NULL, plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend()})), ncol = 4), ggplot(x = 1, y = 1) , NULL, NULL, nrow = 3, ncol = 2, rel_widths = c(3,1), rel_heights = c(0.2,0.9,0.3)))
+
+
+```
+
+
+
+# cNMF 3 factors
+
+
+cNMF was performed using the Python package https://github.com/dylkot/cNMF. The results can be found at in the cNMF directory in the same directory as this report.
+
+
+```{r}
+
+
+usages = read.table("cNMF/all_cNMF.usages.k_3.dt_0_5.consensus.txt", header = TRUE)
+
+spectra = read.table("cNMF/all_cNMF.gene_spectra_score.k_3.dt_0_5.txt", header = TRUE)
+
+
+
+usages_1 = apply(usages,1, function(x){x/sum(x)})
+
+# create a new assay to store ADT information
+#NMF_assay <- CreateAssayObject(counts = t(usages))
+NMF_assay <- CreateAssayObject(counts = usages_1)
+
+# add this assay to the previously created Seurat object
+DATA[["NMF"]] <- NMF_assay
+
+
+
+DATA@active.assay = "NMF"
+
+factors <- rownames(DATA)
+
+
+allfactors = list()
+
+colors = c("#FF0000","#00FF00","#0000FF")
+
+
+
+for(i in factors){
+  allfactors[[i]] = getGenePlots(i, topcolor = colors[as.numeric(gsub("X","",i))], qmax = 0.999, lowcolor = "#000000", imgalpha = 1, pt.alpha = 0.5)
+}
+
+plot_grid(plot_grid(plotlist =
+lapply(1:length(allfactors[[1]]),function(j){
+  plotcolors = lapply(allfactors, function(x){
+    thisplot = x[[j]]
+    ggplot_build(thisplot)$data[[1]]["fill"]
+    })
+  colordf = do.call("cbind",plotcolors)
+  colors = apply(colordf, 1, function(crow){
+    #do.call("rgb",as.list(apply(col2rgb(crow)^2,1, mean)/255^2))
+    do.call("rgb",as.list(apply(col2rgb(crow)/255,1,max)))
+    })
+  g1 = allfactors[[1]][[j]]
+  #g1[[x]]$data[,3] = as.factor(rownames(g1[[x]]$data))
+  g1$data$cell = as.factor(rownames(g1$data))
+  names(colors) = rownames(g1$data)
+  g1$mapping$fill = g1$data$cell
+  g1 = g1 + scale_fill_manual(values = colors) + NoLegend()
+  return(g1)
+  }), nrow = 1
+),
+plot_grid(get_legend(allfactors[[1]][[1]]),get_legend(allfactors[[2]][[1]]),
+          get_legend(allfactors[[3]][[1]]), ncol = 3),
+ncol = 1, rel_heights = c(3,1))
+
+
+
+```
+
+```{r, fig.height = 4}
+
+
+for(i in factors){
+  inum = gsub("X","",i)
+  topgenes = as.data.frame(t(sort(spectra[inum,], decreasing = TRUE)[1:15]))
+  colnames(topgenes) = "Loading"
+  topgenes$Gene = factor(rownames(topgenes), levels = rev(rownames(topgenes)))
+  tgbar = ggplot(topgenes, aes(x = Loading, y = Gene)) + geom_bar(stat = "identity") + 
+    theme(panel.background = element_blank(), panel.grid = element_blank()) + 
+    labs(title = paste("Factor",inum))
+  print(plot_grid(plotGene(i,  qmax = 0.999), 
+                  plot_grid(tgbar,NULL, rel_heights = c(1.1,0.3), nrow = 2), 
+                  rel_widths = c(3,1)))
+}
+
+
+```
+
+
+```{r, fig.height = 8}
+
+DATA = SetIdent(DATA, value = "orig.ident")
+
+d0 = data.frame(p.value = rep(NA,3), diff = rep(NA,3))
+d3 = data.frame(p.value = rep(NA,3), diff = rep(NA,3))
+for(i in 1:3){
+  d0$p.value[i] = wilcox.test(DATA[["NMF"]]@counts[i,DATA$orig.ident=="GW_irrad0"],
+              DATA[["NMF"]]@counts[i,DATA$orig.ident=="STD_irrad0"])$p.value
+  d0$diff[i] = mean(DATA[["NMF"]]@counts[i,DATA$orig.ident=="GW_irrad0"]) -
+              mean(DATA[["NMF"]]@counts[i,DATA$orig.ident=="STD_irrad0"])
+  d3$p.value[i] = wilcox.test(DATA[["NMF"]]@counts[i,DATA$orig.ident=="GW_irrad3"],
+              DATA[["NMF"]]@counts[i,DATA$orig.ident=="STD_irrad3"])$p.value
+  d3$diff[i] = mean(DATA[["NMF"]]@counts[i,DATA$orig.ident=="GW_irrad3"]) -
+              mean(DATA[["NMF"]]@counts[i,DATA$orig.ident=="STD_irrad3"])
+}
+
+
+plot_grid(plotlist = c(lapply(VlnPlot(DATA,features = factors, pt.size = 0, combine = FALSE), 
+                            function(x){
+                              x + NoLegend() + 
+                                geom_point(alpha = 0.1, 
+                                           position = position_jitter(width = 0.3),
+                                           size = 0.1) +
+                                geom_boxplot(width = 0.2, outlier.size = 0)}),
+          list(DotPlot(DATA, features = c("X1","X2","X3")) + 
+                 theme(legend.title = element_text(size = 8),
+                       legend.text = element_text(size = 8))))
+          )
+
+```
+
+
+GW vs STD d0
+
+`r knitr::kable(d0, col.names = c("p-value","Difference in mean"))`
+
+GW vs STD d3
+
+`r knitr::kable(d3, col.names = c("p-value","Difference in mean"))`
+
+```{r, fig.height = 2, fig.width=6}
+
+topweights = as.data.frame(do.call("rbind",lapply(factors,function(i){
+  inum = gsub("X","",i)
+    
+  df = as.data.frame(t(spectra[,names(sort(spectra[inum,], decreasing = TRUE)[1:20])]))
+  df$gene = rownames(df)
+  df
+
+})))
+
+topweights$gene = factor(topweights$gene, levels = topweights$gene)
+heatmapdf = reshape2::melt(topweights)
+colnames(heatmapdf) = c("Gene","Factor","Weight")
+heatmapdf$Factor = factor(heatmapdf$Factor, levels = rev(c(1,2,3)))
+
+ggplot(heatmapdf, aes(y = Factor, x = Gene)) +
+  geom_tile(aes(fill = Weight)) + 
+  theme(axis.text = element_text(size = 8),
+        axis.title = element_text(size = 8),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8),
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+    legend.key.height = unit(10,"pt"),
+    legend.key.width = unit(5,"pt"),
+        panel.background = element_blank()) +
+  scale_fill_viridis_c(option = "magma")
+
+```
+
+
+
+```{r}
+
+sessionInfo()
+
+```

@@ -1,0 +1,637 @@
+---
+title: "LXR irradiation scRNAseq Visium results"
+date: "09 January, 2023"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+
+
+
+
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      message    = FALSE,
+                      warning    = FALSE)
+
+```
+
+```{r packages}
+library(Seurat)
+library(Matrix)
+library(rhdf5)
+library(rafalib)
+library(harmony)
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+
+
+plotGene = function(gene, imgalpha = 0, spatdata = DATA, viridis = FALSE, 
+                    mincol = "#CCCCCC", maxcol = "#0000BB", ...){
+  g = SpatialFeaturePlot(spatdata, gene, stroke = NA, combine = FALSE)
+  if(imgalpha == 0){
+    g = lapply(g, function(x){x + theme(#panel.background = element_rect(fill = "#EEEEEE"), 
+                                        panel.grid = element_blank())})
+  }
+  genemax = max(do.call("rbind",lapply(g,function(x){x$data}))[,gene])
+  
+  if(!viridis){
+    sfill = scale_fill_gradient(limits = c(0,genemax), low = mincol, high = maxcol, 
+                              na.value = "#EEEEEE")
+  }else{
+    sfill = scale_fill_viridis_c(limits = c(0,genemax), na.value = "#EEEEEE")
+  }
+  return(plot_grid(get_legend(g[[1]] + sfill), plot_grid(plotlist = c(lapply(g, function(x){x + sfill + NoLegend()})), ncol = 4), NULL, ncol = 1, rel_heights = c(0.2,0.9,0.3)))
+  
+}
+
+plotGeneColoc = function(gene1 , gene2, extratext = NULL,qmax = NULL){
+  g1 = SpatialFeaturePlot(DATA, gene1, stroke = NA, combine = FALSE)
+  g1 = lapply(g1, function(x){colnames(x$data)[3] = gene1; return(x)})
+  
+  if(!is.null(qmax)){
+    qval = quantile(do.call("rbind",lapply(g1,function(x){x$data}))[,gene1],qmax)
+    g1 = SpatialFeaturePlot(DATA, gene1, stroke = NA, combine = FALSE, max.cutoff = qval)
+    g1 = lapply(g1, function(x){colnames(x$data)[3] = gene1; return(x)})
+  }
+  
+  g2 = SpatialFeaturePlot(DATA, gene2, stroke = NA, combine = FALSE)
+  g2 = lapply(g2, function(x){colnames(x$data)[3] = gene2; return(x)})
+  
+  if(!is.null(qmax)){
+    qval = quantile(do.call("rbind",lapply(g2,function(x){x$data}))[,gene2],qmax)
+    g2 = SpatialFeaturePlot(DATA, gene2, stroke = NA, combine = FALSE, max.cutoff = qval)
+    g2 = lapply(g2, function(x){colnames(x$data)[3] = gene2; return(x)})
+  }
+  
+  colors = lapply(1:length(g1),function(x){rgb(g1[[x]]$data[,gene1]/max(g1[[x]]$data[,gene1]),g2[[x]]$data[,gene2]/max(g2[[x]]$data[,gene2]),0)})
+  
+  g = lapply(1:length(g1), function(x){
+    #g1[[x]]$data[,3] = as.factor(rownames(g1[[x]]$data))
+    g1[[x]]$data$cell = as.factor(rownames(g1[[x]]$data))
+    names(colors[[x]]) = rownames(g1[[x]]$data)
+    g1[[x]]$mapping$fill = g1[[x]]$data$cell
+    g1[[x]] + scale_fill_manual(values = colors[[x]]) + NoLegend()
+  })
+  
+  
+  l1 = get_legend(ggplot(do.call("rbind",lapply(g1,function(x){x$data})),aes_string(fill = gene1)) +
+                    geom_point(x = 1, y = 2) + 
+               scale_fill_gradient(low = "black",high="red") + theme(legend.position = "bottom"))
+  l2 = get_legend(ggplot(do.call("rbind",lapply(g2,function(x){x$data})),aes_string(fill = gene2)) + 
+                    geom_point(x = 1, y = 2) + 
+               scale_fill_gradient(low = "black",high="green") + theme(legend.position = "bottom"))
+  
+  return(plot_grid(plot_grid(l1,l2), 
+                   plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend()})), ncol = 4),
+                   ncol = 1, rel_heights = c(0.2,0.9,0.3)))
+  
+}
+
+
+mySeuratViolin <- function(DATA, feature, ...){
+  x = VlnPlot(DATA, feature, pt.size = 0.1, ...)
+  #x = x+ geom_point(alpha = 0.2, size = 0.1, 
+  #                  position = position_jitter()) +
+  #  NoLegend()
+  x$layers[[3]] =  x$layers[[1]]
+  x$layers[[1]] =  x$layers[[2]]
+  x$layers[[2]] =  x$layers[[3]]
+  x$layers[[3]] =  NULL
+  x = x + geom_boxplot(width = 0.1, fill = NA,
+                   outlier.size = -1)
+  x
+}
+
+
+ggplotColours <- function(n = 6, h = c(0, 360) + 15){
+  if ((diff(h) %% 360) < 1) h[2] <- h[2] - 360/n
+  hcl(h = (seq(h[1], h[2], length = n)), c = 100, l = 65)
+}
+
+```
+
+# Load data
+
+
+```{r load}
+
+PATH <- "raw_data/"
+filelist <- c(paste0(PATH,"/STD_irrad0"),paste0(PATH,"/STD_irrad3"),paste0(PATH,"/GW_irrad0"),paste0(PATH,"/GW_irrad3"))
+
+
+DATA_list <- lapply(filelist,function(i){
+  x <- sub("/outs/","",i)
+  x <- sub(".*[/]","",x)
+  DATA <- Load10X_Spatial(data.dir = i, slice = x)
+  DATA = AddMetaData(DATA, x, "orig.ident")
+})
+DATA <- merge(DATA_list[[1]],DATA_list[-1])
+
+DATA$orig.ident = factor(DATA$orig.ident, levels = c("STD_irrad0","STD_irrad3","GW_irrad0","GW_irrad3" ))
+
+```
+
+
+# H&E images
+
+To reduce file size, the H&E images have been removed from most plots. The images are shown here and can easily be combined with the spatial plots in e.g. Affinity.
+
+```{r he}
+
+g = SpatialFeaturePlot(DATA, "Abca1", stroke = NA, combine = FALSE, alpha = 0)
+plot_grid(NULL, plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend()})), ncol = 4), NULL, ncol = 1, rel_heights = c(0.2,0.9,0.3))
+
+```
+
+
+
+# QC
+
+## Before filtering
+
+```{r qcpre, fig.height = 8}
+DATA <- PercentageFeatureSet(DATA,pattern = "^Rp[ls]",col.name = "percent_ribo")
+DATA <- PercentageFeatureSet(DATA,pattern = "^mt[-]",col.name = "percent_mito")
+
+vars <- c("nCount_Spatial","nFeature_Spatial","percent_ribo","percent_mito")
+
+VlnPlot(DATA, features = vars, ncol = 2, group.by = "orig.ident")
+```
+
+```{r filter}
+for(f in vars){
+  print(plotGene(f))
+}
+
+DATA <- DATA[ !grepl("^mt[-]" ,rownames(DATA)) ,]
+DATA <- DATA[ !grepl("^Malat" ,rownames(DATA)) ,]
+DATA <- DATA[ !grepl("^Mtrp" ,rownames(DATA)) ,]
+DATA <- DATA[, DATA$nCount_Spatial > 20]
+DATA <- DATA[ rowSums( DATA@assays$Spatial@counts > 0 ) >= 5 ,]
+
+
+```
+
+## After filtering
+
+```{r qcpost, fig.height=8}
+
+# pdf( paste0("QC_Visium.pdf"),width = 7,height = 3)
+VlnPlot(DATA, features = vars, ncol = 2, group.by = "orig.ident")
+#dev.off()
+
+```
+
+```{r, plotqc}
+
+for(f in vars){
+  print(plotGene(f))
+}
+
+```
+
+```{r loadfull}
+
+if(file.exists("Visium_dataset_irradiation.rds")){
+  DATA = readRDS("Visium_dataset_irradiation.rds")
+}else{
+  DATA <- NormalizeData(DATA)
+DATA <- FindVariableFeatures(DATA,nfeatures = 4000)
+DATA <- ScaleData(DATA )
+DATA <- RunPCA(DATA)
+DATA <- RunHarmony(DATA , group.by.vars = "orig.ident", assay.use = "Spatial")
+DATA <- RunUMAP(object = DATA, reduction="harmony",
+                dims = 1:50, 
+                n.components = 10, 
+                n.neighbors = 20, 
+                min.dist= .1, 
+                verbose = T,
+                n.epochs = 100,
+                metric = "cosine", 
+                seed.use = 42,
+                learning.rate = 1,
+                negative.sample.rate = 20)
+
+#LOUVAIN k 20
+knn <- RcppHNSW::hnsw_knn( DATA@reductions$harmony@cell.embeddings[,1:50] , 
+                           k = 20 , 
+                           distance = "cosine", n_threads = 7 )
+i <- rep(1:nrow(knn$idx),ncol(knn$idx))
+j <- c(knn$idx)
+p <- c(knn$dist>0)*1
+nn <- as(sparseMatrix(i = i, j=j,  x=p, dims = c(nrow(knn$idx),nrow(knn$idx)),
+       dimnames = list(colnames(DATA),colnames(DATA))), "dgCMatrix")
+
+g <- igraph::graph_from_adjacency_matrix(nn,mode = "undirected")
+cl <- igraph::cluster_louvain(g)
+DATA$clusters_louvain <- cl$membership
+
+DATA$clusters_louvain = factor(DATA$clusters_louvain, levels = sort(unique(DATA$clusters_louvain)))
+DATA = SetIdent(DATA, value = "clusters_louvain")
+
+#LOUVAIN k 500
+knn <- RcppHNSW::hnsw_knn( DATA@reductions$harmony@cell.embeddings[,1:50] , 
+                           k = 500 , 
+                           distance = "cosine", n_threads = 7 )
+i <- rep(1:nrow(knn$idx),ncol(knn$idx))
+j <- c(knn$idx)
+p <- c(knn$dist>0)*1
+nn <- as(sparseMatrix(i = i, j=j,  x=p, dims = c(nrow(knn$idx),nrow(knn$idx)),
+       dimnames = list(colnames(DATA),colnames(DATA))), "dgCMatrix")
+
+g <- igraph::graph_from_adjacency_matrix(nn,mode = "undirected")
+cl <- igraph::cluster_louvain(g)
+unique(cl$membership)
+DATA$clusters_louvain_k500 <- cl$membership
+
+
+#LOUVAIN k 1000
+knn <- RcppHNSW::hnsw_knn( DATA@reductions$harmony@cell.embeddings[,1:50] , 
+                           k = 1000 , 
+                           distance = "cosine", n_threads = 7 )
+i <- rep(1:nrow(knn$idx),ncol(knn$idx))
+j <- c(knn$idx)
+p <- c(knn$dist>0)*1
+nn <- as(sparseMatrix(i = i, j=j,  x=p, dims = c(nrow(knn$idx),nrow(knn$idx)),
+       dimnames = list(colnames(DATA),colnames(DATA))), "dgCMatrix")
+
+g <- igraph::graph_from_adjacency_matrix(nn,mode = "undirected")
+cl <- igraph::cluster_louvain(g)
+unique(cl$membership)
+DATA$clusters_louvain_k1000 <- cl$membership
+
+saveRDS(DATA,"Visium_dataset_irradiation.rds")
+}
+
+
+DATA$orig.ident = factor(DATA$orig.ident, levels = c("STD_irrad0","STD_irrad3","GW_irrad0","GW_irrad3" ))
+
+```
+
+# Spatial gene expression
+
+
+
+
+## LXR genes of interest
+
+```{r lxr}
+
+genes =  c("Abca1","Abcg1","Abcg5","Abcg8","Srebf1","Areg","Cyp27a1","Cyp46a1", "Cyp11a1", "Ch25h")
+
+for(f in genes){
+  print(plotGene(f, imgalpha = 1))
+}
+```
+
+```{r lxrvln, fig.height = ceiling(length(genes)/3)*3}
+
+plot_grid(plotlist = lapply(VlnPlot(DATA, 
+                                    genes,
+                                    group.by = "orig.ident", 
+                                    pt.size = 0, combine = FALSE),
+       function(x){x + geom_point(alpha = 0.2, position = position_jitter(), size = 0.1) + NoLegend()}), ncol = 3)
+```
+
+### Areg in red
+
+```{r}
+
+plotGene("Areg", imgalpha = 1, maxcol = "#FF0000")
+
+```
+
+
+
+# Full sample DE
+
+```{r de}
+
+DATA = SetIdent(DATA, value = "orig.ident")
+
+DE_STD_d3vsd0 = FindMarkers(DATA, ident.1 = "STD_irrad3", 
+                            ident.2 = "STD_irrad0", 
+                            assay = "Spatial",
+                            logfc.threshold = 0.2, 
+                            features = c("Abca1","Areg"))
+
+DE_d3_GWvsSTD = FindMarkers(DATA, ident.1 = "GW_irrad3", 
+                            ident.2 = "STD_irrad3",
+                            assay = "Spatial",
+                            logfc.threshold = 0.2, 
+                            features = c("Abca1","Areg"))
+
+
+DATA = SetIdent(DATA, value = "clusters_louvain")
+
+```
+
+Differential expression results for Abca1 and Areg:
+
+STD d3 vs d0
+
+`r knitr::kable(DE_STD_d3vsd0[c("Abca1","Areg"),])`
+
+
+```{r}
+
+DATA <- AddMetaData(DATA, 
+                    gsub("_.*","",DATA$orig.ident),
+                    "Treatment")
+
+DATA <- AddMetaData(DATA, 
+                    gsub(".*irra","",DATA$orig.ident),
+                    "Day")
+
+for(i in c("Abca1", "Areg")){
+  print(mySeuratViolin(DATA[,DATA@meta.data$Treatment == "STD"], i,
+        group.by = "Day"))
+}
+
+```
+
+d3 GW vs STD
+
+`r knitr::kable(DE_d3_GWvsSTD[c("Abca1","Areg"),])`
+
+
+```{r}
+
+VlnPlot(DATA[,DATA@meta.data$Day == "d3"], 
+        group.by = "Treatment",
+        features = c("Abca1", "Areg"))
+
+```
+
+# Clustering
+
+
+```{r clustering}
+
+
+color_list_muted = ggplotColours(n = length(unique(DATA@active.ident)))
+
+color_list_muted[3] = "#FFFB00"
+color_list_muted[7] = "#00FDFF"
+
+names(color_list_muted) = c(10,11,5,9,7,8,4,6,12,3,2,1)
+color_list_muted = color_list_muted[order(as.numeric(names(color_list_muted)))]
+
+
+color_list = rainbow(n = length(unique(DATA@active.ident)))
+
+color_list[3] = "#FFFB00"
+color_list[7] = "#00FDFF"
+
+names(color_list) = c(10,11,4,9,7,8,5,6,12,3,2,1)
+color_list = color_list[order(as.numeric(names(color_list)))]
+
+colors = scale_color_manual(values = color_list_muted)
+fills = scale_fill_manual(values = color_list_muted)
+
+plot_grid(DimPlot(DATA, label = TRUE) + colors + NoLegend(),
+          DimPlot(DATA, group.by = "orig.ident", 
+                  shuffle = TRUE))
+
+```
+
+```{r clusteringspatial}
+
+
+g = SpatialDimPlot(DATA, stroke = NA, combine = FALSE)
+plot_grid(plot_grid(plotlist = 
+                      c(lapply(g, function(x){x + NoLegend() + fills})), ncol = 4),
+          get_legend(g[[1]] + fills + 
+                       theme(legend.position = "bottom")), ncol = 1, 
+          rel_heights = c(1,0.2))
+
+```
+
+
+
+```{r clusteringbar}
+
+plot_grid(
+ggplot(DATA@meta.data, aes(x = clusters_louvain)) + 
+  geom_bar(aes(fill = orig.ident), position = "fill"),
+ggplot(DATA@meta.data, aes(x = orig.ident)) +
+  geom_bar(aes(fill = factor(clusters_louvain)), position = "fill") + 
+  labs(fill = "Cluster") +
+  fills)
+
+```
+
+
+
+```{r clusters4and5}
+
+colorvalues = c(color_list[4], color_list[5])
+
+g = SpatialDimPlot(DATA[,DATA$clusters_louvain %in% c(4,5)], stroke = NA,
+                   combine = FALSE, alpha = 0.7)
+plot_grid(plot_grid(plotlist = c(lapply(g, function(x){x + NoLegend() +
+    scale_fill_manual(values = colorvalues)})),
+                    ncol = 4),
+          get_legend(g[[1]] + theme(legend.position = "bottom") + 
+                       scale_fill_manual(values = colorvalues)), 
+          ncol = 1, rel_heights = c(1,0.2))
+
+
+
+```
+
+
+## Expression of Areg, Abca1, Cyp27a1 in clusters
+
+
+```{r lxrclusters}
+
+VlnPlot(DATA, features = c("Abca1","Areg","Cyp27a1"), group.by = "clusters_louvain")
+
+```
+
+
+
+```{r, fig.width  = 5, fig.height= 5 }
+
+
+DotPlot(DATA, features = c("Abca1","Areg","Cyp27a1"), group.by = "clusters_louvain")
+
+
+```
+
+### Split by samples
+
+
+```{r, fig.width  = 5, fig.height= 5 }
+
+#DATA = SetIdent(DATA, value = "orig.ident")
+
+dotlist_sample = list()
+for(i in unique(DATA$clusters_louvain)){
+  dotlist_sample[[i]] = DotPlot(DATA, features = c("Abca1","Areg","Cyp27a1"), 
+                         group.by = "orig.ident", idents = i, scale = FALSE)
+}
+
+#dotlist_sample$STD_irrad0$data
+
+dotdata = do.call("rbind",lapply(dotlist_sample, function(x){x$data}))
+dotdata$Cluster = as.numeric(gsub("\\..*", "", rownames(dotdata)))
+
+
+template = DotPlot(DATA, features = "Abca1", scale = FALSE) +
+    coord_flip() + labs(title = paste("Cluster",i)) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+geneDotPlot = function(gene, samples = unique(DATA$orig.ident)){
+  template$data = dotdata[dotdata$features.plot==gene & dotdata$id %in% samples,]
+  template$data$features.plot = factor(template$data$Cluster)
+  
+  return(plot_grid(template + labs(title = gene) + 
+    labs(x = "Cluster", y = "Sample") + 
+      theme(legend.title = element_text(size =6 ), legend.text = element_text(size = 6),
+            legend.key.width = unit(0.3, "cm"))))
+}
+
+for(gene in c("Abca1","Areg","Cyp27a1")){
+  print(plot_grid(geneDotPlot(gene),
+                  geneDotPlot(gene, c("STD_irrad0", "GW_irrad0")), 
+                  rel_widths = c(1,0.7)))
+}
+
+
+
+```
+
+
+
+
+## DE of Areg between samples within clusters - only Areg-expressing spots
+
+
+```{r, fig.height = 7}
+
+DATA = SetIdent(DATA, value = "orig.ident")
+AregDATA = subset(DATA, cells = WhichCells(DATA, expression = Areg > 0))
+DATA = SetIdent(DATA, value = "clusters_louvain")
+
+clusters = SplitObject(AregDATA, split.by = "clusters_louvain")
+
+plot_grid(plotlist = lapply(names(clusters), function(x){
+  VlnPlot(clusters[[x]], features = "Areg") + NoLegend() + 
+    labs(title = paste("Areg cluster",x))}))
+
+AregDATA = SetIdent(AregDATA, value = "clusters_louvain")
+
+```
+
+```{r}
+
+DE_d3_GWvsSTD_Aregpos = lapply(names(clusters), function(x){
+  message(x)
+  y = FindMarkers(clusters[[x]], ident.1 = "GW_irrad3", ident.2 = "STD_irrad3",
+                  assay = "Spatial",  features = c("Areg"), 
+                  logfc.threshold = -Inf)
+  y$cluster = x
+  y$gene = rownames(y)
+  y
+})
+
+
+DE_d3_GWvsSTD_Aregpos_df = do.call("rbind",DE_d3_GWvsSTD_Aregpos)
+
+# DE_d3_GWvsSTD_df[DE_d3_GWvsSTD_df$gene == "Areg",]
+DE_d3_GWvsSTD_Aregpos_df$cluster = 
+  factor(DE_d3_GWvsSTD_Aregpos_df$cluster,
+         levels = sort(as.numeric(DE_d3_GWvsSTD_Aregpos_df$cluster)))
+
+areg = DE_d3_GWvsSTD_Aregpos_df[DE_d3_GWvsSTD_Aregpos_df$gene == "Areg",]
+
+plot_grid(ggplot(areg,
+       aes(x = factor(cluster, 
+                      levels = areg$cluster[order(areg$avg_log2FC)]), 
+                      y = avg_log2FC)) + 
+         geom_bar(stat = "identity") +
+         labs(x = "Cluster") +
+         coord_flip(),
+       
+ggplot(areg,
+       aes(x = factor(cluster, 
+                      levels = areg$cluster[order(areg$p_val_adj,
+                                                  decreasing = TRUE)]),
+           y =  -log10(p_val_adj))) + 
+  geom_bar(stat = "identity") +
+         labs(x = "Cluster") +
+         coord_flip(),
+
+ggplot(areg,
+       aes(x = avg_log2FC, y =  -log10(p_val_adj)))  + 
+  geom_hline(yintercept = -log10(0.05), color = "#CCCCCC") +
+  geom_point(aes(color = cluster)) + 
+  ggrepel::geom_text_repel(aes(label = cluster))  +
+  theme_classic() + NoLegend() + colors,
+ncol = 3)
+
+AregDATA = SetIdent(AregDATA, value = "clusters_louvain")
+
+```
+
+
+### In spatial
+
+```{r}
+
+for(i in c(3,4,5,7)){
+  AregDATA = AddMetaData(AregDATA, AregDATA$clusters_louvain==i, paste0("cluster",i))
+  AregDATA = AddMetaData(AregDATA, FetchData(AregDATA, vars = "Areg"),
+                         paste0("cluster",i,"_Areg"))
+  AregDATA@meta.data[AregDATA@meta.data[,paste0("cluster",i)] == FALSE,
+                     paste0("cluster",i,"_Areg")] = NA
+  print(plotGene(paste0("cluster",i), spatdata = AregDATA))
+  print(plotGene(paste0("cluster",i,"_Areg"), spatdata = AregDATA, viridis = TRUE))
+}
+
+```
+
+
+## Top markers for each cluster
+
+```{r, fig.height=8}
+
+
+markers_genes = FindAllMarkers(DATA, max.cells.per.ident = 500, random.seed = 42, only.pos = TRUE, test.use = "wilcox")
+
+
+top25 <- markers_genes[markers_genes$p_val_adj<0.05,] %>% group_by(cluster) %>% top_n(-25, p_val)
+top25 <- top25 %>% group_by(cluster) %>% top_n(25, avg_log2FC)
+
+
+mypar(2, 5, mar = c(4, 6, 3, 1))
+for (i in unique(top25$cluster)) {
+    barplot(sort(setNames(top25$avg_log2FC, top25$gene)[top25$cluster == i], F), horiz = T, 
+        las = 1, main = paste0(i, " vs. rest"), border = "white", yaxs = "i")
+    abline(v = c(0, 0.25), lty = c(1, 2))
+}
+
+
+```
+
+
+
+```{r}
+
+sessionInfo()
+
+```
