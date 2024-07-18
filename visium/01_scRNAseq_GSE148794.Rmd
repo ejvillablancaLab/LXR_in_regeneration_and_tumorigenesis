@@ -1,0 +1,183 @@
+# GSE148794 scRNAseq analysis
+
+## Reading data
+
+```{r}
+sc <- read.delim("~/Downloads/tc_ibd.count_table.tsv",row.names = 1)
+scm<-read.delim("~/Downloads/tc_ibd.metadata.tsv",row.names = 1)
+```
+
+## Quality control
+
+```{r}
+sc_seurat <- CreateSeuratObject(counts = sc)
+sc_seurat <- PercentageFeatureSet(sc_seurat,pattern = "^mt[-]",col.name = "percent_mito")
+sc_seurat <- sc_seurat[ !grepl("^mt[-]" ,rownames(sc_seurat)) ,]
+sc_seurat <- sc_seurat[ !grepl("^Malat" ,rownames(sc_seurat)) ,]
+sc_seurat <- sc_seurat[ !grepl("^Mtrp" ,rownames(sc_seurat)) ,]
+sc_seurat <- sc_seurat[ rowSums( sc_seurat@assays$RNA@counts > 0 ) >= 5 ,]
+dim(sc_seurat)
+```
+
+## QC plots
+
+```{r}
+vars <- c("nCount_RNA","nFeature_RNA","percent_mito")
+
+pdf( paste0("QC_GSE148794.pdf"),width = 11,height = 3)
+par(mfrow=c(1,1),mar=c(2,8,1,1))
+barlist(sc_seurat, genes = vars, assay = "RNA",clustering = "orig.ident")
+dev.off()
+```
+
+
+## Dimensionality reduction
+
+No major bacth effects were detected
+
+```{r}
+sc_seurat <- NormalizeData(sc_seurat, scale.factor = 10000)
+sc_seurat <- FindVariableFeatures(sc_seurat,nfeatures = 4000)
+sc_seurat <- ScaleData(sc_seurat )
+sc_seurat <- RunPCA(sc_seurat)
+sc_seurat <- RunUMAP(object = sc_seurat, reduction="pca",
+                dims = 1:50, 
+                n.components = 2, 
+                n.neighbors = 15, 
+                spread = .3,
+                repulsion.strength = .2,
+                min.dist= .1, 
+                verbose = T,
+                num_threads=0,
+                n.epochs = 100,
+                metric = "cosine", 
+                seed.use = 42,
+                learning.rate = 1,
+                negative.sample.rate = 20)
+```
+
+## Graph construction and clustering
+
+```{r}
+# Graph construction
+knn <- RcppHNSW::hnsw_knn( sc_seurat@reductions$pca@cell.embeddings[,1:50] , 
+                           k = 10 , 
+                           distance = "cosine", n_threads = 7 )
+i <- rep(1:nrow(knn$idx),ncol(knn$idx))
+j <- c(knn$idx)
+p <- c(knn$dist>0)*1
+nn <- as(sparseMatrix(i = i, j=j,  x=p, dims = c(nrow(knn$idx),nrow(knn$idx)),
+       dimnames = list(colnames(sc_seurat),colnames(sc_seurat))), "dgCMatrix")
+
+# Louvain clustering
+g <- igraph::graph_from_adjacency_matrix(nn,mode = "undirected")
+cl <- igraph::cluster_louvain(g)
+sc_seurat$clusters_louvain <- cl$membership
+
+
+plot_meta(sc_seurat,feat = "clusters_louvain",label = T)
+```
+
+## Compute differential gene expression
+
+```{r}
+sample_size <- table(sc_seurat$clusters_louvain)
+sample_size[ sample_size > 20 ] <- 20
+sample_size
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(sc_seurat) [ sc_seurat$clusters_louvain == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+
+DGE_DATA <- sc_seurat[, DGE_cells]
+DGE_DATA <- SetIdent( DGE_DATA , value = "clusters_louvain")
+detable <- FindAllMarkers( DGE_DATA, only.pos = T,max.cells.per.ident = 250,
+                          logfc.threshold = .1,assay = "RNA",
+                          min.pct = 0.05)
+detable <- detable[ detable$p_val < 0.05,  ]
+detable$pct.diff <- detable$pct.1 - detable$pct.2
+detable$log.pct.diff <- log2( (detable$pct.1*99+1) / (detable$pct.2*99+1) )
+write.csv2(detable,"detable_clusters_GSE148794_single_cell_seurat.csv")
+
+
+library(dplyr)
+detable %>% group_by(cluster)  %>% top_n(-60, p_val) %>% top_n(40, pct.diff) %>% top_n(20, log.pct.diff)-> top5
+ord <- getcluster(data = DGE_DATA, genes = unique(as.character(top5$gene)), clustering = "clusters_louvain")
+m_feats <- unique(as.character(top5$gene))[order(as.numeric( as.character(ord) ))]
+m_feats <- m_feats[ m_feats %in% rownames(DGE_DATA)]
+
+pdf( paste0("DGE_subset_GSE148794_single_cell_seurat.pdf"),width = 10,height = length(ord)/6+2)
+mypar(1,1,mar=c(8,10,1,5))
+plot_dots(sc_seurat, unique(as.character(top5$gene))[order(as.numeric( as.character(ord) ))], clustering = "clusters_louvain", show_grid = T,main = "top cluster markers",cex.main=1,font.main=1,cex.col = 1,srt = 90,cex.row = 1.1)
+dev.off()
+
+```
+
+
+## Plotting
+
+```{r}
+detable<- read.csv2("detable_clusters_GSE148794_single_cell_seurat.csv",row.names = 1)
+
+library(dplyr)
+detable %>% group_by(cluster)  %>% top_n(-60, p_val) %>% top_n(40, pct.diff) %>% top_n(20, log.pct.diff)-> top5
+if(!dir.exists("single_cell")){dir.create("single_cell",recursive = T)}
+
+for(j in unique(top5$cluster) ){
+  pdf( paste0("single_cell/DGE_UMAP_GSE148794_c",j,".pdf"),width = 5*3,height = 5*3,useDingbats = F)
+  mypar(5,5,mar=c(1,1,1,1))
+  plot_meta(sc_seurat,feat = "orig.ident",label = T)
+  plot_meta(sc_seurat,feat = "clusters_louvain",label = T)
+  for(i in unique(top5$gene[top5$cluster == j]) ){
+    plot_feat( sc_seurat, feat = i )
+  }
+  dev.off()
+}
+
+```
+
+## Save object
+
+```{r}
+saveRDS(sc_seurat, "GSE148794_single_cell_seurat.rds")
+```
+
+
+
+
+```{r}
+library(dplyr)
+library(niceRplots)
+library(rafalib)
+
+sc_seurat <- readRDS("GSE148794_single_cell_seurat.rds")
+sample_size <- table(sc_seurat$clusters_louvain)
+sample_size[ sample_size > 20 ] <- 20
+sample_size
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(sc_seurat) [ sc_seurat$clusters_louvain == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+DGE_DATA <- sc_seurat[, DGE_cells]
+DGE_DATA <- SetIdent( DGE_DATA , value = "clusters_louvain")
+detable <- read.csv2("detable_clusters_GSE148794_single_cell_seurat.csv",row.names = 1)
+
+detable %>% group_by(cluster)  %>% top_n(-20, p_val) %>% top_n(15, pct.diff) %>% top_n(5, log.pct.diff)-> top5
+ord <- getcluster(data = DGE_DATA, genes = unique(as.character(top5$gene)), clustering = "clusters_louvain")
+m_feats <- unique(as.character(top5$gene))[order(as.numeric( as.character(ord) ))]
+m_feats <- m_feats[ m_feats %in% rownames(DGE_DATA)]
+m_feats <- grep("Rik$",m_feats,value = T,invert = T)
+m_feats
+
+pdf( paste0("DGE_subset_GSE148794_single_cell_seurat_top5.pdf"),width = 8,height = length(ord)/10+2)
+mypar(1,1,mar=c(8,10,1,5))
+plot_dots(sc_seurat, m_feats, clustering = "clusters_louvain", show_grid = T,main = "top cluster markers",cex.main=1,font.main=1,cex.col = 1,srt = 90,cex.row = 0.8)
+dev.off()
+```
+

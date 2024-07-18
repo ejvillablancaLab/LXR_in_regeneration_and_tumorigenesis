@@ -1,0 +1,28 @@
+name: CRC
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - bioconductor-biomart
+  - bioconductor-annotate
+  - bioconductor-hgu133plus2.db
+  - bioconductor-Biobase
+  - bioconductor-GEOquery
+  - bioconductor-edger
+  - bioconductor-fgsea
+  - r-languageserver
+  - compilers
+  - r-base>=4.0
+  - r-biocmanager
+  - r-dplyr
+  - r-enrichr>=2
+  - r-knitr
+  - r-markdown
+  - r-rmarkdown
+  - r-pheatmap
+  - r-rafalib
+  - r-stringi
+  - r-stringr
+  - r-multcomp
+

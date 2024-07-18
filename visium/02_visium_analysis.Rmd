@@ -1,0 +1,935 @@
+
+
+
+# Load libraries
+
+```{r}
+
+library(Seurat)
+library(biomaRt)
+library(Matrix)
+library(niceRplots)
+library(rhdf5)
+library(rafalib)
+library(harmony)
+library(future)
+library(future.apply)
+library(dplyr)
+library(WGCNA)
+library(fastcluster)
+library(enrichR)
+
+remotes::install_github('czarnewski/niceRplots')
+
+```
+
+
+# Additional function to read high-res images
+
+```{r}
+
+Read10X_Image2 <- function (image.dir, filter.matrix = TRUE, ...) 
+{ image <- png::readPNG(source = file.path(image.dir, "tissue_hires_image.png"))
+    scale.factors <- jsonlite::fromJSON(txt = file.path(image.dir, "scalefactors_json.json"))
+    tissue.positions <- read.csv(file = file.path(image.dir, 
+        "tissue_positions_list.csv"), col.names = c("barcodes", 
+        "tissue", "row", "col", "imagerow", "imagecol"), header = FALSE, 
+        as.is = TRUE, row.names = 1)
+    if (filter.matrix) {
+        tissue.positions <- tissue.positions[which(x = tissue.positions$tissue == 
+            1), , drop = FALSE]
+    }
+    unnormalized.radius <- scale.factors$fiducial_diameter_fullres * 
+        scale.factors$tissue_lowres_scalef
+    spot.radius <- unnormalized.radius/max(dim(x = image))
+    return(new(Class = "VisiumV1", image = image, scale.factors = scalefactors(spot = scale.factors$tissue_hires_scalef, 
+        fiducial = scale.factors$fiducial_diameter_fullres, hires = scale.factors$tissue_hires_scalef, 
+        scale.factors$tissue_lowres_scalef), coordinates = tissue.positions, 
+        spot.radius = spot.radius)) }
+
+```
+
+
+# Reading data
+
+```{r}
+PATH <- "../raw_data//spatial_rnaseq/CRCrawdata/"
+DATA <- readRDS('../raw_data/spatial_rnaseq/CRC_seobject')
+filelist <- list.dirs("../raw_data/spatial_rnaseq/CRCrawdata",recursive = T)[-1]
+
+DATA_list <- lapply(filelist,function(i){
+  x <- sub(".*[/]","",i)
+  DATA <- Read10X_h5(paste0(i,"/filtered_feature_bc_matrix.h5"))
+  colnames(DATA) <- paste0(sub("[-].*","",colnames(DATA)),"_",x)
+  DATA <- CreateSeuratObject(counts = DATA,project = x)
+})
+DATA <- merge(DATA_list[[1]],DATA_list[-1])
+dim(DATA)
+
+
+for(i in filelist){
+  x <- sub(".*[/]","",i)
+  image <- Read10X_Image2(image.dir = i)
+  rownames(image@coordinates) <- paste0(sub("[-].*","",rownames(image@coordinates)),"_",x)
+  image@coordinates <- image@coordinates[ colnames(DATA)[DATA$orig.ident == x] , ]
+  DefaultAssay(object = image) <- "RNA"
+  DATA[[x]] <- image
+}
+```
+
+
+# Plot HE images
+
+```{r}
+mypar(4,6)
+img_list <- names(DATA@images)
+gene <- "Cd19"
+for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  gene, main="",assay="RNA",
+                    pch=16,cex=1,plot_tissue = T,
+                    transparency = "00")}
+for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  gene, 
+                    main=paste0(gene," (",i,")"),assay="RNA",
+                    pch=16,cex=1,plot_tissue = F)}
+```
+
+
+# Do standard single-cell processing
+
+```{r}
+DATA <- PercentageFeatureSet(DATA,pattern = "^Rp[ls]",col.name = "percent_ribo")
+DATA <- PercentageFeatureSet(DATA,pattern = "^mt[-]",col.name = "percent_mito")
+DATA <- DATA[ !grepl("^mt[-]" ,rownames(DATA)) ,]
+DATA <- DATA[ !grepl("^Malat" ,rownames(DATA)) ,]
+DATA <- DATA[ !grepl("^Mtrp" ,rownames(DATA)) ,]
+DATA <- DATA[, DATA$nCount_RNA > 200]
+DATA <- DATA[ rowSums( DATA@assays$RNA@counts > 0 ) >= 5 ,]
+
+dim(DATA)
+DATA <- NormalizeDATA(DATA, scale.factor = 10000)
+DATA <- FindVariableFeatures(DATA,nfeatures = 4000)
+DATA <- ScaleData(DATA )
+DATA <- RunPCA(DATA)
+DATA <- RunHarmony( DATA , group.by.vars = "orig.ident" )
+DATA <- RunUMAP(object = DATA, reduction="harmony",
+ dims = 1:50, 
+ n.components = 2, 
+ n.neighbors = 20, 
+ spread = .3,
+ repulsion.strength = .2,
+ min.dist= .1, 
+ verbose = T,
+ num_threads=0,
+ n.epochs = 100,
+ metric = "cosine", 
+ seed.use = 42,
+ learning.rate = 1,
+ negative.sample.rate = 20)
+```
+
+
+# Check for batches of artifacts
+
+```{r}
+vars <- c("nCount_RNA","nFeature_RNA","percent_ribo","percent_mito")
+
+pdf( paste0("QC_Visium.pdf"),width = 7,height = 3)
+par(mfrow=c(1,1),mar=c(2,8,1,1))
+barlist(DATA, genes = vars, assay = "RNA", clustering = "orig.ident")
+dev.off()
+```
+
+
+# Perform Louvain on KNN
+
+```{r}
+#LOUVAIN
+knn <- RcppHNSW::hnsw_knn( DATA@reductions$harmony@cell.embeddings[,1:50] , 
+                           k = 20 , 
+                           distance = "cosine", n_threads = 7 )
+i <- rep(1:nrow(knn$idx),ncol(knn$idx))
+j <- c(knn$idx)
+p <- c(knn$dist>0)*1
+nn <- as(sparseMatrix(i = i, j=j,  x=p, dims = c(nrow(knn$idx),nrow(knn$idx)),
+       dimnames = list(colnames(DATA),colnames(DATA))), "dgCMatrix")
+
+g <- igraph::graph_from_adjacency_matrix(nn,mode = "undirected")
+cl <- igraph::cluster_louvain(g)
+DATA$clusters_louvain <- cl$membership
+plot_meta(DATA,feat = "clusters_louvain",label = T)
+saveRDS(DATA,"Visium_dataset_CRC.rds")
+
+# DATA <- readRDS('Visium_dataset_CRC.rds')
+
+```
+
+
+# Plot spot-clusters
+
+```{r}
+pdf("ST_clusters.pdf",height = 1*3.5,width = 7*3.5,useDingbats = F)
+mypar(1,7)
+img_list <- names(DATA@images)
+plot_meta(DATA,feat = "clusters_louvain",label = T)
+for(i in img_list){
+  plot_spatial_meta(DATA, red = i,feat =  "clusters_louvain", main=paste0("clusters_louvain"," (",i,")"),assay="RNA",pch=16,cex=1,plot_tissue = F)}
+
+dev.off()
+```
+
+
+# Subsample and compute differential expression (per cluster)
+
+```{r}
+sample_size <- table(DATA$clusters_louvain)
+sample_size[ sample_size > 100 ] <- 100
+sample_size
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(DATA) [ DATA$clusters_louvain == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+
+DGE_DATA <- DATA[, DGE_cells]
+DGE_DATA <- SetIdent( DGE_DATA , value = "clusters_louvain")
+detable <- FindAllMarkers( DGE_DATA, only.pos = T,max.cells.per.ident = 250,
+                          logfc.threshold = .1,assay = "RNA",
+                          min.pct = 0.05)
+detable <- detable[ detable$p_val < 0.05,  ]
+detable$pct.diff <- detable$pct.1 - detable$pct.2
+detable$log.pct.diff <- log2( (detable$pct.1*99+1) / (detable$pct.2*99+1) )
+write.csv2(detable,"detable_clusters.csv")
+
+```
+
+
+# Filter differential expression table (per cluster)
+
+```{r}
+
+library(dplyr)
+detable %>% group_by(cluster)  %>% top_n(-60, p_val) %>% top_n(40, pct.diff) %>% top_n(20, log.pct.diff)-> top5
+
+ord <- getcluster(DATA, unique(as.character(top5$gene)), "clusters_louvain")
+ord <- sort(ord)
+
+```
+
+
+# Plot top genes (per cluster)
+
+```{r}
+
+pdf( paste0("DGE_subset.pdf"),width = 7,height = length(ord)/6+1)
+mypar(1,1,mar=c(2,6,1,5))
+plot_dots(DGE_DATA, unique(as.character(top5$gene))[order(as.numeric( as.character(ord) ))], clustering = "clusters_louvain", show_grid = T,main = "top cluster markers",cex.main=1,font.main=1,cex.col = 1,srt = 0,cex.row = 1.1)
+dev.off()
+
+```
+
+
+# Plot cluster abundances per sample (per cluster, across conditions)
+
+```{r}
+res <- table(list(DATA$clusters_louvain,DATA$orig.ident))
+res <- t(res)
+res <- res[,order(colSums(res),decreasing = T)]
+res2 <- t( t(res) / colSums(res) )
+
+pdf(file = paste0("cluster_sample_abundance.pdf"),
+    width = 8,height = 5,useDingbats = F)
+mypar(2,1,mar=c(2,4,0,1))
+barplot(res,las=1,ylim=c(0,max(colSums(res))*1.3),col = hue_pal()(nrow(res)),ylab = "total cell numbers\n",xaxs="i",yaxs="i",space = 0)
+legend("topright",legend = rownames(res), bty = "n",fill = hue_pal()(nrow(res)))
+barplot(res2*100,las=1,col=hue_pal()(nrow(res)),ylab="percentage\n",xaxs="i",yaxs="i",space = 0)
+# abline(h=50, lty=2)
+dev.off()
+```
+
+
+# Compute differential expression (per cluster, across conditions)
+
+```{r}
+# Genes_for_annotation_Paulo
+groups <- paste0(DATA$clusters_louvain, '_', as.character(DATA$orig.ident) )
+DATA$subgroups <- factor(groups)
+sample_size <- table(DATA$subgroups)
+sample_size[ sample_size > 50 ] <- 50
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(DATA) [ DATA$subgroups == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+DGE_DATA <- DATA[, DGE_cells]
+
+
+detable_pat <- lapply(unique(DGE_DATA$clusters_louvain),DGE_DATA=DGE_DATA, function(x,DGE_DATA){ 
+  temp <- DGE_DATA[,DGE_DATA$clusters_louvain == x]
+  print(temp)
+  temp <- SetIdent( temp , value = "orig.ident")
+  detable <- FindAllMarkers( temp, only.pos = T,max.cells.per.ident = 50,
+                          logfc.threshold = .1,assay = "RNA",
+                          min.pct = 0.05)
+  return( cbind(detable,cell_cluster= x) )
+})
+detable <- do.call(rbind,detable_pat)
+
+detable <- detable[ detable$p_val < 0.05,  ]
+detable$pct.diff <- detable$pct.1 - detable$pct.2
+detable$log.pct.diff <- log2( (detable$pct.1+1) / (detable$pct.2+1) )
+write.csv2(detable,"detable_for_each_cluster_across_conditions.csv")
+```
+
+
+# Plot DGE results (per cluster, across conditions)
+
+```{r setup, include=FALSE}
+detable$groups <- paste0(detable$cell_cluster,detable$cluster)
+detable %>% group_by(groups)  %>% top_n(-60, p_val) %>% top_n(40, pct.diff) %>% top_n(20, log.pct.diff) -> top5
+ord <- factor(sapply(unique(as.character(top5$gene)),function(x){getcluster(DGE_DATA, x, "subgroups")}))
+ord
+
+pdf( paste0("DGE_subgroups.pdf"),width = 20,height = length(ord)/6+3)
+mypar(1,1,mar=c(14,6,1,5))
+plot_dots(DGE_DATA, unique(as.character(top5$gene))[order(as.numeric( as.character(ord) ))], clustering = "subgroups", show_grid = T,main = "top cluster markers",cex.main=1,font.main=1,cex.col = 1,srt = 90,cex.row = 1.1)
+abline(v=cumsum(c(table(sub( "_.*","",names(table(DGE_DATA$subgroups))))))+0.5)
+dev.off()
+```
+
+
+# Save-Load point
+
+```{r}
+DATA <- readRDS("Visium_dataset_CRC.rds")
+detable <-  read.csv2("detable_for_each_cluster_across_conditions.csv",row.names = 1)
+groups <- paste0(DATA$clusters_louvain, '_', as.character(DATA$orig.ident) )
+DATA$subgroups <- factor(groups)
+```
+
+
+
+# Cluster genes based on expression trends (per cluster, across conditions)
+
+```{r}
+
+detable$groups <- paste0(detable$cell_cluster,detable$cluster)
+detable %>% group_by(groups)  %>% top_n(-60, p_val) %>% top_n(50, pct.diff) %>% top_n(40, log.pct.diff) -> top5
+
+mygenes <- unique(top5$gene)
+mygenes <- mygenes[mygenes %in% rownames(DATA@assays$RNA@data)]
+DATA <- NormalizeData(DATA)
+tmp <- DATA@assays$RNA@data[mygenes,]
+
+mm <- Matrix::sparse.model.matrix(~ 0 + DATA$subgroups)
+colnames(mm) <- gsub("DATA$subgroups","",colnames(mm))
+
+res1 <- tmp %*% mm
+res1 <- t( t(res1) / colSums(mm) )
+
+res2 <- ((tmp>0)*1) %*% mm
+res2 <- t( t(res2) / colSums(mm) )
+
+res3 <- round(res1*res2,3)
+
+adj <- (1-WGCNA::cor(t(res1))) / 2
+h <- fastcluster::hclust(d = as.dist(adj),method = "ward.D2")
+cl <- cutree(h,h = 1.1)
+plot(as.dendrogram(h))
+abline( h=1.1 , col="red",lty=2)
+
+genes_to_plot <- h$labels[h$order]
+
+pdf( paste0("DGE_per_cluster_across_treatments_GroupingByExpression.pdf"),width = 20,height = length(genes_to_plot)/6+3)
+mypar(1,1,mar=c(14,6,1,5))
+plot_dots(DATA, genes_to_plot, clustering = "subgroups", show_grid = T,
+          main = "top cluster markers",cex.main=1,font.main=1,
+          cex.col = 1,srt = 90,cex.row = 1.1)
+abline(v=cumsum(c(table(sub( "_.*","",names(table(DATA$subgroups))))))+0.5)
+dev.off()
+```
+
+
+
+# Compute Gene Set Analysis (per cluster, across conditions)
+
+```{r}
+gene_lists <- lapply(unique(cl),function(x){names(cl)[cl == x]})
+names(gene_lists) <- unique(cl)
+enrichR::listEnrichrDbs()[,3]
+
+plan(multisession, workers=future::availableCores()-1 )
+
+enrichr_res <- future_lapply(gene_lists,function(x){enrichr(x,databases = c("PanglaoDB_Augmented_2021","KEGG_2019_Mouse","WikiPathways_2019_Mouse","GO_Biological_Process_2021","MSigDB_Hallmark_2020"))})
+enrichr_res$`1`$KEGG_2019_Mouse[1:5,]
+enrichr_res$`14`$MSigDB_Hallmark_2020[1:10,]
+enrichr_res$`14`$PanglaoDB_Augmented_2021[1:10,]
+
+pdf( paste0("DGE_per_cluster_across_treatments_enrichments.pdf"),
+     width = length(enrichr_res[[1]])*8,
+     height = length(enrichr_res)*2)
+mypar(length(enrichr_res),length(enrichr_res[[1]]))
+for(i in names(enrichr_res)){
+  for(j in names(enrichr_res[[i]])){
+    k = 3
+    par(mar=c(1,1,4,1))
+    xx <- -log10(enrichr_res[[i]][[j]][k:1,"P.value"])
+    barplot( height = xx , xlim=c(0,max(xx)*30), axes = F, main=paste0(i,"\n",j),
+             names.arg = "",horiz = T,las=1)
+    abline(v=c(0,2),lty=c(1,2),lwd=c(2,1),xpd=F)
+    text(x = -log10(enrichr_res[[i]][[j]][k:1,"P.value"]), y=(1:3)*1.2-0.5,pos=4,
+         labels = paste0( "",enrichr_res[[i]][[j]][k:1,"Term"], "\n" ,gsub(";",",",enrichr_res[[i]][[j]][k:1,"Genes"]) ) )
+    # text(x = -log10(enrichr_res[[i]][[j]][k:1,"P.value"]), y=(1:3)*1.2-0.5,adj = c(0,0),enrichr_res[[i]][[j]][k:1,"Genes"])
+  }
+}
+dev.off()
+
+colnames(res1) <- sub("DATA[$]subgroups","",colnames(res1))
+group_ordering <- colnames(res1)[order(sub(".*[0-9]_","",colnames(res1)))]
+pheatmap::pheatmap(res1[,group_ordering],scale = "row",cluster_rows = h,cluster_cols = F,annotation_row = data.frame(module=as.factor(cl) ), cutree_rows = length(unique(cl)),
+ color = colorRampPalette(c("navy","navy","grey95","firebrick4","firebrick4") )(99),
+ filename = "Gene_module_heatmap_across_conditions.pdf",
+ width = 15,height = 20,fontsize_row = 1.2)
+```
+
+
+
+# Plot Gene Set Analysis (per cluster, across conditions)
+
+```{r}
+pal <- c(RColorBrewer::brewer.pal(9,"Set1"),RColorBrewer::brewer.pal(8,"Set2"),
+         RColorBrewer::brewer.pal(9,"Pastel1"),RColorBrewer::brewer.pal(8,"Pastel2")) #color pallete for plots
+heat_pal <- c("#000000", colorRampPalette(c("#000000","grey5","grey30","orange3","yellow","yellow","white"))(90))
+cor_pal <- colorRampPalette(c("navy","white","firebrick"))(90)
+
+layout(matrix(c(1,2,3,4,1,2,3,4),
+ nrow = 2,ncol = 4,byrow = T),widths = c(1,2,.5,6))
+par(mar=c(4,.1,2,.1))
+
+plot( rev(as.dendrogram(h)) ,xlim=c(max(h$height),-1), horiz = T, 
+ leaflab = "none",xaxs="i",yaxs="i",axes=T)
+cutoff <- 1.1
+abline(v=cutoff,xpd=F,col="red",lty=2)
+gene_module <- cl
+
+points( rep(-.5,length(gene_module)),
+ seq(length(gene_module),1,length.out = length(gene_module)),
+ col=pal[factor(gene_module[h$order])],
+ pch=16,cex=1,xpd=T)
+
+colnames(res1) <- sub("DATA[$]subgroups","",colnames(res1))
+group_ordering <- colnames(res1)[order(sub(".*[0-9]_","",colnames(res1)))]
+tmp <- t(apply(res1,1,function(x)scale(x,T,T)))
+colnames(tmp) <- colnames(res1)
+tmp[tmp > 5] <- 5
+tmp[tmp < -5] <- -5
+
+
+image( as.matrix(t(tmp[h$order,][nrow(tmp):1,group_ordering])),
+ col = colorRampPalette(c("navy","grey95","firebrick4") )(99),
+ breaks = seq(-5,5,length.out = 100),axes=F)
+
+```
+
+
+
+
+# Plot Gene Set Analysis (per cluster, across conditions)
+
+
+```{r}
+mypar(2,2)
+plot_meta(DATA,feat = "orig.ident",label = T)
+plot_feat(DATA,feat = "Cd19",cex = .5)
+```
+
+
+
+# Module mapping from bulk RNA-seq (over time)
+
+```{r}
+modules <- read.csv2("../new_version/analysis/daymodules.csv",row.names = 1)
+
+mm <- sapply( na.omit(unique(modules$module)), function(x){
+  temp <- na.omit(rownames(modules)[modules$module == x])
+  temp <- DATA@assays$RNA@data[rownames(DATA@assays$RNA@data) %in% temp,]
+  temp <- temp[rowSums(temp>0)>5,]
+  temp <- temp / rowSums(temp)
+  temp <- colMeans(temp)
+  return(temp)
+} )
+colnames(mm) <- paste0("module",na.omit(unique(modules$module)))
+
+DATA@assays[['modules_kinetic']] <- CreateAssayObject(data = t(mm))
+```
+
+# Plot modules from bulk RNA-seq (over time)
+
+```{r}
+pdf("ST_mapping_modules_time.pdf",height = 11*3.5,width = 6*3.5,useDingbats = F)
+mypar(11,6)
+img_list <- names(DATA@images)
+# for(i in img_list){
+#   plot_spatial_feat(DATA, red = i,feat =  "Cd19", main="H&E",assay="RNA",
+#                     pch=16,cex=1,plot_tissue = T,
+#                     transparency = "00")}
+for(module in rownames(DATA@assays$modules_kinetic@data)){
+  for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  module, 
+                    main=paste0(module," (",i,")"),assay="modules_kinetic",
+                    pch=16,cex=1,plot_tissue = F)}
+}
+dev.off()
+```
+
+
+# Module mapping from bulk RNA-seq (effect GW)
+
+```{r}
+modules <- read.csv2("../new_version/analysis/dietmodules.csv",row.names = 1)
+
+mm <- sapply( na.omit(unique(modules$module)), function(x){
+  temp <- na.omit(rownames(modules)[modules$module == x])
+  temp <- DATA@assays$RNA@data[rownames(DATA@assays$RNA@data) %in% temp,]
+  temp <- temp[rowSums(temp>0)>5,]
+  temp <- temp / rowSums(temp)
+  temp <- colMeans(temp)
+  return(temp)
+} )
+colnames(mm) <- paste0("module",na.omit(unique(modules$module)))
+
+DATA@assays[['modules_diet']] <- CreateAssayObject(data = t(mm))
+```
+
+
+# Plot modules from bulk RNA-seq (over time)
+
+```{r}
+pdf("ST_mapping_modules_diet.pdf",height = 11*3.5,width = 6*3.5,useDingbats = F)
+mypar(11,6)
+img_list <- names(DATA@images)
+# for(i in img_list){
+#   plot_spatial_feat(DATA, red = i,feat =  "Cd19", main="H&E",assay="RNA",
+#                     pch=16,cex=1,plot_tissue = T,
+#                     transparency = "00")}
+for(module in rownames(DATA@assays$modules_diet@data)){
+  for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  module, 
+                    main=paste0(module," (",i,")"),assay="modules_diet",
+                    pch=16,cex=1,plot_tissue = F)}
+  }
+dev.off()
+```
+
+
+
+# Spatial spot-deconvolution with SCDC
+
+## Loading Data
+
+```{r}
+library(SCDC)
+library(SingleCellExperiment)
+
+sc_seurat <- readRDS("GSE148794_single_cell_seurat.rds")
+sample_size <- table(sc_seurat$clusters_louvain)
+
+sample_size[ sample_size > 20 ] <- 20
+sample_size
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(sc_seurat) [ sc_seurat$clusters_louvain == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+
+DGE_DATA <- sc_seurat[, DGE_cells]
+DGE_DATA <- SetIdent( DGE_DATA , value = "clusters_louvain")
+
+sc_eset_SC <- ExpressionSet(assayData=as.matrix(DGE_DATA@assays$RNA@counts[m_feats,]),
+                         phenoData =  AnnotatedDataFrame(DGE_DATA@meta.data))
+CRC_eset <- ExpressionSet(assayData=as.matrix(DATA@assays$RNA@counts[m_feats,]),phenoData = AnnotatedDataFrame(DATA@meta.data))
+
+
+deconvolution_crc <- SCDC::SCDC_prop(bulk.eset = CRC_eset,
+                       sc.eset = sc_eset_SC,
+                       ct.varname = "clusters_louvain",
+                       ct.sub = as.character(unique(sc_eset_SC$clusters_louvain)) )
+saveRDS(deconvolution_crc , "deconvolution_crc.rds" )
+
+DATA@assays[["SCDC_prop"]] <- Seurat::CreateAssayObject(data = t(deconvolution_crc$prop.est.mvw),
+                                                       min.cells = 0,min.features = 0)
+DATA@assays[["SCDC_prop_Cluster"]] <- Seurat::CreateAssayObject(data = rowsum(DATA@assays$SCDC_prop@data, gsub("_Healthy|_Inflamed|_Non[-]inflamed","",rownames(DATA@assays$SCDC_prop@data))),
+                                                       min.cells = 0,min.features = 0)
+saveRDS(DATA,"Visium_dataset_CRC.rds")
+```
+
+
+
+```{r}
+DATA <- readRDS("Visium_dataset_CRC.rds")
+sc_seurat <- readRDS("GSE148794_single_cell_seurat.rds")
+
+annot <- read.csv2("CellTypeGuesses.csv",row.names = 1)
+
+sc_seurat$annot <- annot$fine_annotation[match(sc_seurat$clusters_louvain,rownames(annot))]
+
+tmp <- rowsum( DATA@assays$SCDC_prop@data , annot$fine_annotation )
+DATA@assays[["SCDC_prop_annot"]] <- Seurat::CreateAssayObject(data = tmp,  min.cells = 0,min.features = 0)
+
+img_list <- names(DATA@images)
+clusters <- rownames(DATA@assays$SCDC_prop_annot@data)
+
+
+if(!dir.exists("SCDC_annot")){dir.create("SCDC_annot",recursive = T)}
+
+pdf("SCDC_annot/_HE.pdf",width = (length(img_list) + 1)*3.5,height = 3.5,useDingbats = F)
+mypar(1,length(img_list) + 1)
+plot_meta( sc_seurat , feat = "annot" , cex=.5,label = T )
+for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  "Actb", main="",assay="RNA",
+                    pch=16,cex=1,plot_tissue = T,
+                    transparency = "00")}
+dev.off()
+
+
+for(j in clusters){
+  pdf(paste0("SCDC_annot/cluster",j,".pdf"),
+      width = (length(img_list) + 1)*3.5,
+      height = 3.5,useDingbats = F)
+  
+  mypar(1,length(img_list) + 1)
+  sc_seurat$temp <- (sc_seurat$annot == j)*1
+  plot_feat( sc_seurat , feat = "temp" , cex=.5, main=j )
+  
+  for(i in img_list){
+    plot_spatial_feat(DATA, 
+                      red = i, 
+                      feat =  j, 
+                      main=paste0(i," (",j,")"),
+                      assay="SCDC_prop_annot",
+                      pch=16,cex=1, 
+                      plot_tissue = F)
+  }
+dev.off()
+}
+
+```
+
+
+
+```{r}
+coocurrence <- lapply(img_list,function(x){
+  temp <- DATA@assays$SCDC_prop_annot@data[,DATA$orig.ident == x]
+  temp <- sqrt( temp %*% t(temp) / ncol(temp))
+  rownames(temp) <- rownames(DATA@assays$SCDC_prop_annot@data)
+  colnames(temp) <- rownames(DATA@assays$SCDC_prop_annot@data)
+  return( temp )
+})
+names(coocurrence) <- img_list
+```
+
+
+
+```{r}
+pdf("cell-cell_codetection_annot.pdf",width = 7*3.5,height = 3*3.5, useDingbats = F)
+mypar(3,7,mar=c(1,1,1,1))
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  g <- igraph::graph_from_adjacency_matrix( coocurrence[[i]] , mode = "undirected",weighted = T)
+  el <- data.frame(as_edgelist(g),E(g)$weight)
+  el <- el[el[,3] > 0.01,]
+  
+  segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+            col=paste0(colorRampPalette(c("grey80","black"))( 100 ),sprintf("%02d",round((0:99)/2+50) ))[round(el[,3]*98)+1],
+            lwd=el[,3]*20)
+}
+
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  temp <- log2( ( coocurrence[[i]] +1) /  (coocurrence[[1]] +1) )
+  if(sum(abs(temp)) != 0){
+      g <- igraph::graph_from_adjacency_matrix( temp , mode = "undirected",weighted = T)
+      el <- data.frame(as_edgelist(g),E(g)$weight)
+
+    el <- el[abs(el[,3]) > 0.01,]
+    segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+              col=paste0(colorRampPalette(c("navy","grey80","firebrick"))( 100 ), sprintf("%02d",c(49:0,0:49)+50 ))[ round((el[,3]*200))+50 ] ,
+              lwd=abs(el[,3]*20) )
+  }
+}
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  temp <- log2( ( coocurrence[[i]] +1) /  (coocurrence[[3]] +1) )
+  if(sum(abs(temp)) != 0){
+      g <- igraph::graph_from_adjacency_matrix( temp , mode = "undirected",weighted = T)
+      el <- data.frame(as_edgelist(g),E(g)$weight)
+
+    el <- el[abs(el[,3]) > 0.01,]
+    segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+              col=paste0(colorRampPalette(c("navy","grey80","firebrick"))( 100 ), sprintf("%02d",c(49:0,0:49)+50 ))[ round((el[,3]*200))+50 ] ,
+              lwd=abs(el[,3]*20) )
+  }
+}
+dev.off()
+
+```
+
+# Differetial cell abundance
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$SCDC_prop_annot@data[,grepl("d22|d43",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+treat <- factor(gsub("d22|d43","chow",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+
+# First step: using .*. for all interactions
+# f <- as.formula(y ~ .*.)
+# y <- temp[,"y"]
+# # Second step: using model.matrix to take advantage of f
+# x <- model.matrix(f, df)[, -1]
+# mod2 <- bigGlm(x, y)
+# mod2$beta
+# fit <- cv.glmnet(x,y)
+
+
+plan(multiprocess, workers=future::availableCores()-1  )
+
+temp2 <- data.frame(group,treat)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group*treat ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_abundance_plot_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 0.015 ) & ( cl_group[,2] < 1e-50 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-0.4,0.4), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = rownames(cl_group)[cl_group[,3]] , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-0.015,0,0.015),h=50,lty=20,col="grey50")
+}
+dev.off()
+
+```
+
+
+# Differetial cell abundance
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$SCDC_prop_annot@data[,!grepl("GW",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[!grepl("GW",DATA$orig.ident)]))
+
+plan(multiprocess, workers=future::availableCores()-1  )
+temp2 <- data.frame(group)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_abundance_plot_controls_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 0.015 ) & ( cl_group[,2] < 1e-50 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-0.4,0.4), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = rownames(cl_group)[cl_group[,3]] , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-0.015,0,0.015),h=50,lty=20,col="grey50")
+}
+dev.off()
+
+```
+
+
+
+
+# GSA enrichment
+
+
+```{r}
+modules <- as.data.frame(read.csv2("modulepathways.csv"))
+rownames(modules) <- paste0(modules$Module ,"_",modules$Term)
+
+mm <- apply( modules , 1 , tmp = DATA@assays$RNA@data, function(x,tmp){
+  comm <- rownames(tmp)[ rownames(tmp) %in% unlist(strsplit(x["Genes"],";")) ]
+  temp <- tmp[comm,]
+  temp <- temp[rowSums(temp>0)>5,]
+  temp <- temp / rowSums(temp)
+  temp <- colMeans(temp)
+  return(temp)
+} )
+t(mm)[1,]
+
+colnames(mm) <- rownames(modules)
+
+DATA@assays[['modules_GSA']] <- CreateAssayObject(data = t(mm))
+```
+
+
+
+
+# Differetial module score
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$modules_GSA@data[,grepl("d22|d43",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+treat <- factor(gsub("d22|d43","chow",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+
+# First step: using .*. for all interactions
+# f <- as.formula(y ~ .*.)
+# y <- temp[,"y"]
+# # Second step: using model.matrix to take advantage of f
+# x <- model.matrix(f, df)[, -1]
+# mod2 <- bigGlm(x, y)
+# mod2$beta
+# fit <- cv.glmnet(x,y)
+
+
+plan(multiprocess, workers=future::availableCores()-1  )
+
+temp2 <- data.frame(group,treat)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group*treat ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_module_score_plot_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 1e-5 ) & ( cl_group[,2] < 1e-2 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-1e-4 ,1e-4 ), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = gsub( "[-] .*", "",rownames(cl_group)[cl_group[,3]]) , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-1e-5,0,1e-5),h=2,lty=2,col="grey50")
+}
+dev.off()
+
+```
+
+
+# Differetial module score (controls only)
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$modules_GSA@data[,!grepl("GW",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[!grepl("GW",DATA$orig.ident)]))
+
+plan(multiprocess, workers=future::availableCores()-1  )
+temp2 <- data.frame(group)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+
+
+pdf("differential_module_score_plot_control_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 1e-5 ) & ( cl_group[,2] < 1e-2 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-1e-4 ,1e-4 ), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = gsub( "[-] .*", "",rownames(cl_group)[cl_group[,3]]) , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-1e-5,0,1e-5),h=2,lty=2,col="grey50")
+}
+dev.off()
+
+```
+
+
+
+
+
+

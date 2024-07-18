@@ -1,0 +1,104 @@
+---
+title: "Analysis of microarray dataset GSE39582"
+author: "Paulo Czarnewski"
+date: "17 January 2017"
+output: html_document
+---
+
+
+# Load libraries
+
+```{r setup, include=FALSE}
+
+library(annotate)
+library(hgu133plus2.db)
+library(Biobase)
+library(GEOquery)
+library(rafalib)
+library(multcomp)
+
+setwd("./")
+
+```
+
+# Fetch dataset from GEO
+
+```{r}
+
+gset <- getGEO("GSE39582",GSEMatrix =TRUE, getGPL=FALSE)
+gset <- gset[[1]]
+
+gset <- getGEO(filename="GSE39582_series_matrix.txt",GSEMatrix =TRUE, getGPL=FALSE)
+
+for(i in colnames(pData(gset))){
+  message(i)
+  print(pData(gset)[1,i])
+}
+
+```
+
+# Inspect and harmonize metadata
+
+```{r}
+
+molecular_subtype <- as.character(x=pData(gset)$characteristics_ch1.30)
+names(molecular_subtype) <- rownames(pData(gset))
+molecular_subtype[grep("cit.molecularsubtype",molecular_subtype,invert = TRUE)] <- "NT"
+molecular_subtype[grep("cit.molecularsubtype",molecular_subtype)] <- t(as.data.frame(strsplit(molecular_subtype[grep("cit.molecularsubtype",molecular_subtype)],split = " ")))[,2]
+molecular_subtype[molecular_subtype == 'N/A'] <- "NT"
+
+```
+
+# Convert probes to gene IDs and make sure the data is in the same order as the metadata
+
+``` {r}
+
+out <- mapIds(hgu133plus2.db, keys=rownames(exprs(gset)), c("SYMBOL"), keytype="PROBEID")
+out <- na.omit(out)
+data <- exprs(gset)
+data <- data[rownames(data) %in% names(out), ]
+rownames(data) <- out[rownames(data)]
+data <- data[order(rownames(data)),]
+
+```
+
+# Plot overall data distribution (check for batch effects)
+
+``` {r}
+
+pdf(file="data distribution from CRC dataset GSE39582.pdf",width = 5,height = 5)
+shist(data[,1],col="red",xlim=c(2,12),type="n",ylim=c(0,12000))
+polygon(c(-5,-5,5,5),c(-5000,15000,15000,-5000),col='gray95',border = NA)
+for (i in 1:ncol(data)) {shist(data[,i],col="red",add=T)}
+invisible(dev.off())
+
+```
+
+# Plot the gene expression across groups and do statistical tests
+
+```{r}
+
+genelist <- c("CD8A","CD8B","GZMA","GZMB","GZMH","GZMK","GZMM","FAS","FASLG","CD69","ITGAE",
+"PRF1","GBP5","NKG7","MADCAM1","ITGB7","ITGAE","ITGA4","CDH1","GPR35","CCR9","CCL25","PDX1","CDX2")
+
+pdf(file="GSE39582_20240514.pdf",width = 15,height = 15)
+mypar(5,5)
+for (i in genelist){
+  Group <- relevel(factor(molecular_subtype),ref="NT")
+  Value <- data[i,]
+  temp <- data.frame(Group, Value)
+  fit <- aov(Value ~ Group, temp)
+  Dunnett <- glht(fit, linfct=mcp(Group="Dunnett"))
+  a <- summary(Dunnett)
+  symbols <- unlist(lapply(c(a$test$pvalues),function(x) ifelse(x < 0.05,ifelse(x < 0.01,ifelse(x < 0.001,"***","**"),"*"),"NS")))
+  boxplot(data[i,] ~ molecular_subtype,col=colorcode,main=i, type="n", ylim=c(min(data[i,]),1+max(data[i,])),outline=T,cex=0.1)
+  polygon(c(0,0,length(unique(molecular_subtype))+1,length(unique(molecular_subtype))+1),c(0,5,5,0),col='gray95',border = NA)
+  boxplot(data[i,] ~ molecular_subtype,col=colorcode,main=i, type="n", ylim=c(min(data[i,]),1+max(data[i,])),add=T,outline=T)
+  text("Dunnett test against NT group",x=mean(c(1,length(unique(molecular_subtype)))), y = 1+max(data[i,]))
+  text(symbols,x=1:(length(unique(molecular_subtype))-1), y = 0.5+max(data[i,]))
+  abline(h=c(median(data[i, molecular_subtype=="NT"])),col="red",lty=1,lwd=2)
+  stripchart(data[i,] ~ molecular_subtype, vertical = TRUE, method = "jitter", add = TRUE, pch = 20, col = colorcode)
+}; mypar()
+invisible(dev.off())
+
+```

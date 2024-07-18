@@ -1,0 +1,435 @@
+
+
+# Spatial spot-deconvolution with SCDC
+
+
+## Load libraries
+
+```{r}
+
+library(Seurat)
+library(SCDC)
+library(SingleCellExperiment)
+library(biomaRt)
+library(Matrix)
+library(niceRplots)
+library(rhdf5)
+library(rafalib)
+library(harmony)
+library(future)
+library(future.apply)
+library(dplyr)
+library(WGCNA)
+
+
+remotes::install_github('czarnewski/niceRplots')
+
+```
+
+
+## Compute the top DGE from single-cell reference
+
+```{r}
+
+sc_seurat <- readRDS("GSE148794_single_cell_seurat.rds")
+sample_size <- table(sc_seurat$clusters_louvain)
+
+sample_size[ sample_size > 20 ] <- 20
+sample_size
+
+DGE_cells <- lapply(names(sample_size), function(x){ 
+  set.seed(1)
+  sample( colnames(sc_seurat) [ sc_seurat$clusters_louvain == x ] , size = sample_size[x])
+  })
+DGE_cells <- unlist(DGE_cells)
+
+
+DGE_DATA <- sc_seurat[, DGE_cells]
+DGE_DATA <- SetIdent( DGE_DATA , value = "clusters_louvain")
+```
+
+
+
+## Compute SCDC deconvolution 
+
+```{r}
+sc_eset_SC <- ExpressionSet(assayData=as.matrix(DGE_DATA@assays$RNA@counts[m_feats,]),
+ phenoData =  AnnotatedDataFrame(DGE_DATA@meta.data))
+CRC_eset <- ExpressionSet(assayData=as.matrix(DATA@assays$RNA@counts[m_feats,]),
+ phenoData = AnnotatedDataFrame(DATA@meta.data))
+
+
+deconvolution_crc <- SCDC::SCDC_prop(bulk.eset = CRC_eset,
+ sc.eset = sc_eset_SC,
+ ct.varname = "clusters_louvain",
+ ct.sub = as.character(unique(sc_eset_SC$clusters_louvain)) )
+saveRDS(deconvolution_crc , "deconvolution_crc.rds" )
+
+DATA@assays[["SCDC_prop"]] <- Seurat::CreateAssayObject(data = t(deconvolution_crc$prop.est.mvw),
+ min.cells = 0,min.features = 0)
+DATA@assays[["SCDC_prop_Cluster"]] <- Seurat::CreateAssayObject(data = rowsum(DATA@assays$SCDC_prop@data, 
+ gsub("_Healthy|_Inflamed|_Non[-]inflamed","",rownames(DATA@assays$SCDC_prop@data))),
+ min.cells = 0,min.features = 0)
+saveRDS(DATA,"Visium_dataset_CRC.rds")
+```
+
+
+
+## Load single-cell annotation onto the spatial
+
+```{r}
+DATA <- readRDS("Visium_dataset_CRC.rds")
+sc_seurat <- readRDS("GSE148794_single_cell_seurat.rds")
+
+annot <- read.csv2("CellTypeAnnot.csv",row.names = 1)
+
+sc_seurat$annot <- annot$fine_annotation[match(sc_seurat$clusters_louvain,rownames(annot))]
+
+tmp <- rowsum( DATA@assays$SCDC_prop@data , annot$fine_annotation )
+DATA@assays[["SCDC_prop_annot"]] <- Seurat::CreateAssayObject(data = tmp,  min.cells = 0,min.features = 0)
+
+img_list <- names(DATA@images)
+clusters <- rownames(DATA@assays$SCDC_prop_annot@data)
+
+```
+
+
+## Plot the cell type labels from annotation
+
+```{r}
+
+if(!dir.exists("SCDC_annot")){dir.create("SCDC_annot",recursive = T)}
+
+pdf("SCDC_annot/_HE.pdf",width = (length(img_list) + 1)*3.5,height = 3.5,useDingbats = F)
+mypar(1,length(img_list) + 1)
+plot_meta( sc_seurat , feat = "annot" , cex=.5,label = T )
+for(i in img_list){
+  plot_spatial_feat(DATA, red = i,feat =  "Actb", main="",assay="RNA",
+    pch=16,cex=1,plot_tissue = T,
+    transparency = "00")}
+dev.off()
+
+
+for(j in clusters){
+  pdf(paste0("SCDC_annot/cluster",j,".pdf"),
+      width = (length(img_list) + 1)*3.5,
+      height = 3.5,useDingbats = F)
+  
+  mypar(1,length(img_list) + 1)
+  sc_seurat$temp <- (sc_seurat$annot == j)*1
+  plot_feat( sc_seurat , feat = "temp" , cex=.5, main=j )
+  
+  for(i in img_list){
+    plot_spatial_feat(DATA, 
+       red = i, 
+        feat =  j, 
+        main=paste0(i," (",j,")"),
+        assay="SCDC_prop_annot",
+        pch=16,cex=1, 
+        plot_tissue = F)
+  }
+dev.off()
+}
+
+```
+
+
+
+## Compute cell-cell co-detection rate
+
+This is done as from  Frede, Czarnewski et al (2022) Immunity
+https://doi.org/10.1016/j.immuni.2022.11.002
+
+```{r}
+coocurrence <- lapply(img_list,function(x){
+  temp <- DATA@assays$SCDC_prop_annot@data[,DATA$orig.ident == x]
+  temp <- sqrt( temp %*% t(temp) / ncol(temp))
+  rownames(temp) <- rownames(DATA@assays$SCDC_prop_annot@data)
+  colnames(temp) <- rownames(DATA@assays$SCDC_prop_annot@data)
+  return( temp )
+})
+names(coocurrence) <- img_list
+```
+
+
+## Compute cell-cell co-detection rates
+
+```{r}
+pdf("cell-cell_codetection_annot.pdf",width = 7*3.5,height = 3*3.5, useDingbats = F)
+mypar(3,7,mar=c(1,1,1,1))
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  g <- igraph::graph_from_adjacency_matrix( coocurrence[[i]] , mode = "undirected",weighted = T)
+  el <- data.frame(as_edgelist(g),E(g)$weight)
+  el <- el[el[,3] > 0.01,]
+  
+  segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+            col=paste0(colorRampPalette(c("grey80","black"))( 100 ),sprintf("%02d",round((0:99)/2+50) ))[round(el[,3]*98)+1],
+            lwd=el[,3]*20)
+}
+
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  temp <- log2( ( coocurrence[[i]] +1) /  (coocurrence[[1]] +1) )
+  if(sum(abs(temp)) != 0){
+      g <- igraph::graph_from_adjacency_matrix( temp , mode = "undirected",weighted = T)
+      el <- data.frame(as_edgelist(g),E(g)$weight)
+
+    el <- el[abs(el[,3]) > 0.01,]
+    segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+              col=paste0(colorRampPalette(c("navy","grey80","firebrick"))( 100 ), sprintf("%02d",c(49:0,0:49)+50 ))[ round((el[,3]*200))+50 ] ,
+              lwd=abs(el[,3]*20) )
+  }
+}
+
+plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = T)
+for(i in names(coocurrence)){
+  l <-  t(sapply( as.character(unique(sc_seurat$annot)) , 
+                          reds=as.data.frame(sc_seurat@reductions$umap@cell.embeddings[,1:2]), 
+                          cl1=sc_seurat$annot, function(jj,reds,cl1) { pmean(reds[cl1==jj,])  }))
+  plot_meta( sc_seurat,red = "umap",feat = "annot",cex=.8,label = F,col = "grey90",main=i)
+  temp <- log2( ( coocurrence[[i]] +1) /  (coocurrence[[3]] +1) )
+  if(sum(abs(temp)) != 0){
+      g <- igraph::graph_from_adjacency_matrix( temp , mode = "undirected",weighted = T)
+      el <- data.frame(as_edgelist(g),E(g)$weight)
+
+    el <- el[abs(el[,3]) > 0.01,]
+    segments( x0 = l[el[,1],1] , y0 = l[el[,1],2] ,x1 =  l[el[,2],1] , y1 = l[el[,2],2],
+              col=paste0(colorRampPalette(c("navy","grey80","firebrick"))( 100 ), sprintf("%02d",c(49:0,0:49)+50 ))[ round((el[,3]*200))+50 ] ,
+              lwd=abs(el[,3]*20) )
+  }
+}
+dev.off()
+
+```
+
+
+## Differential cell abundance
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$SCDC_prop_annot@data[,grepl("d22|d43",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+treat <- factor(gsub("d22|d43","chow",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+
+plan(multiprocess, workers=future::availableCores()-1  )
+
+temp2 <- data.frame(group,treat)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group*treat ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_abundance_plot_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 0.015 ) & ( cl_group[,2] < 1e-50 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-0.4,0.4), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = rownames(cl_group)[cl_group[,3]] , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-0.015,0,0.015),h=50,lty=20,col="grey50")
+}
+dev.off()
+
+```
+
+
+# Differential cell abundance (VEH controls only, NOT treated with GW )
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$SCDC_prop_annot@data[,!grepl("GW",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[!grepl("GW",DATA$orig.ident)]))
+
+plan(multiprocess, workers=future::availableCores()-1  )
+temp2 <- data.frame(group)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_abundance_plot_controls_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 0.015 ) & ( cl_group[,2] < 1e-50 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-0.4,0.4), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = rownames(cl_group)[cl_group[,3]] , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-0.015,0,0.015),h=50,lty=20,col="grey50")
+}
+dev.off()
+
+```
+
+
+
+
+# GSA enrichment
+
+
+```{r}
+modules <- as.data.frame(read.csv2("modulepathways.csv"))
+rownames(modules) <- paste0(modules$Module ,"_",modules$Term)
+
+mm <- apply( modules , 1 , tmp = DATA@assays$RNA@data, function(x,tmp){
+  comm <- rownames(tmp)[ rownames(tmp) %in% unlist(strsplit(x["Genes"],";")) ]
+  temp <- tmp[comm,]
+  temp <- temp[rowSums(temp>0)>5,]
+  temp <- temp / rowSums(temp)
+  temp <- colMeans(temp)
+  return(temp)
+} )
+t(mm)[1,]
+
+colnames(mm) <- rownames(modules)
+
+DATA@assays[['modules_GSA']] <- CreateAssayObject(data = t(mm))
+```
+
+
+
+
+# Differential module score
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$modules_GSA@data[,grepl("d22|d43",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+treat <- factor(gsub("d22|d43","chow",DATA$orig.ident[grepl("d22|d43",DATA$orig.ident)]))
+
+
+plan(multiprocess, workers=future::availableCores()-1  )
+
+temp2 <- data.frame(group,treat)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group*treat ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+cl
+
+
+pdf("differential_module_score_plot_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 1e-5 ) & ( cl_group[,2] < 1e-2 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-1e-4 ,1e-4 ), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = gsub( "[-] .*", "",rownames(cl_group)[cl_group[,3]]) , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-1e-5,0,1e-5),h=2,lty=2,col="grey50")
+}
+dev.off()
+
+```
+
+
+# Differetial module score (VEH controls only, NOT treated with GW )
+
+```{r}
+library(glmnet)
+library(glmnetUtils)
+
+DATA$orig.ident <- factor(DATA$orig.ident)
+temp <- DATA@assays$modules_GSA@data[,!grepl("GW",DATA$orig.ident)]
+group <- factor(gsub(".*[_]","",DATA$orig.ident[!grepl("GW",DATA$orig.ident)]))
+
+plan(multiprocess, workers=future::availableCores()-1  )
+temp2 <- data.frame(group)
+cl <- future_lapply(rownames(temp),temp=temp,temp2=temp2, function(x,temp,temp2) {
+  df <- cbind(temp2,y=temp[x,])
+  m <- summary( glm( y ~ group ,data = df) )
+  return( m$coefficients )
+} , future.seed = 1 )
+names(cl) <- rownames(temp)
+
+
+pdf("differential_module_score_plot_control_annot.pdf",width = 4*3,height = 4,useDingbats = F)
+mypar(1,3)
+for( i in rownames(cl[[1]])[-1]){
+  
+  cl_group <- data.frame(t(sapply(cl,i=i,function(x,i){x[i, c("Estimate","Pr(>|t|)") ]})))
+  cl_group <- cbind(cl_group , sig = ( abs(cl_group[,1]) > 1e-5 ) & ( cl_group[,2] < 1e-2 ) )
+  cl_group[,2][cl_group[,2]==0] <- min(cl_group[,2][cl_group[,2]!=0])
+
+  plot( cl_group[,1] , -log10(cl_group[,2]) , ylim=c(0,400),
+        xlim=c(-1e-4 ,1e-4 ), pch=16, main=i, 
+        ylab="-log10(pvalue)",xlab="Estimate",
+        col= ifelse(cl_group[,3] ,"red","grey70") )
+  
+  text( cl_group[cl_group[,3],1] , 
+        -log10(cl_group[cl_group[,3],2]) , 
+        labels = gsub( "[-] .*", "",rownames(cl_group)[cl_group[,3]]) , 
+        pos=ifelse(cl_group[cl_group[,3],1]>0,3,3) )
+  
+  abline(v=c(-1e-5,0,1e-5),h=2,lty=2,col="grey50")
+}
+dev.off()
+
+```
+
+
+
+
+
+
