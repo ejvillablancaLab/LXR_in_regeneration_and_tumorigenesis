@@ -1,0 +1,278 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup}
+
+library(Seurat)
+library(Matrix)
+library(ggplot2)
+library(cowplot)
+library(ggrepel)
+
+library(future)
+plan("multisession", workers = 4)
+options(future.globals.maxSize = 15000 * 1024^2)
+
+
+volcanotheme = theme(axis.text = element_text(size = 8),
+                     axis.title = element_text(size = 8),
+                     panel.grid = element_blank(),
+                     panel.background = element_blank(),
+                     
+                    plot.title = element_text(hjust = 0.5,
+                                              size = 10))
+
+volcano = function(vdata, plottitle = ""){
+  ggplot(vdata, aes(x = avg_log2FC, y = -log10(p_val_adj))) + 
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  geom_point(size = 1) + 
+  geom_text_repel(data = vdata[abs(vdata$avg_log2FC)>1 & vdata$p_val_adj<0.05,],
+                  aes(label = gene), size = 2.5) + 
+  labs(title = plottitle) +
+  volcanotheme
+}
+
+```
+
+
+
+# Epithelial data
+
+
+## Diet DE
+
+```{r}
+
+EPI.int = readRDS("../analysis/filtered_EPI_int_clus.rds")
+
+EPI.int@active.assay = "RNA"
+
+```
+
+```{r}
+
+epi_de = FindMarkers(EPI.int,
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf)
+
+epi_de$gene = rownames(epi_de)
+
+write.csv2(epi_de, "../analysis/GWvsSTD_epi_de_all.csv")
+
+
+epi_de_500 = FindMarkers(EPI.int,
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf,
+            max.cells.per.ident = 500)
+
+epi_de_500$gene = rownames(epi_de_500)
+
+
+```
+
+
+```{r}
+
+plot_grid(volcano(epi_de, "All cells"),
+          volcano(epi_de_500, "500 cells per group"))
+
+```
+
+
+
+# Immune and double negative cells
+
+```{r}
+
+IMM_DN.int = readRDS("../analysis/filtered_IMM_DN_int_clus.rds")
+
+IMM_DN.int@active.assay = "RNA"
+
+```
+
+
+
+
+## Immune
+
+
+```{r}
+
+data.types = SplitObject(IMM_DN.int, split.by = "Type")
+
+```
+
+
+
+```{r}
+
+imm_de = FindMarkers(data.types[["IMM"]],
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf)
+
+imm_de$gene = rownames(imm_de)
+
+write.csv2(imm_de, "../analysis/GWvsSTD_imm_de_all.csv")
+
+imm_de_500 = FindMarkers(data.types[["IMM"]],
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf,
+            max.cells.per.ident = 500)
+
+imm_de_500$gene = rownames(imm_de_500)
+
+```
+
+
+```{r, fig.height = 3}
+
+plot_grid(volcano(imm_de, "All cells"),
+          volcano(imm_de_500, "500 cells per group"))
+
+```
+
+## Double negative
+
+
+```{r}
+
+dn_de = FindMarkers(data.types[["DN"]],
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf)
+
+dn_de$gene = rownames(dn_de)
+
+write.csv2(dn_de, "../analysis/GWvsSTD_dn_de_all.csv")
+
+
+
+dn_de_500 = FindMarkers(data.types[["DN"]],
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf,
+            max.cells.per.ident = 500)
+
+dn_de_500$gene = rownames(dn_de_500)
+
+```
+
+
+```{r, fig.height = 3}
+
+plot_grid(volcano(dn_de, "All cells"),
+          volcano(dn_de_500, "500 cells per group"))
+
+```
+
+
+
+## GO inflammatory response
+
+
+```{r, fig.width = 5}
+
+Immune = c('Gal', 'Mefv', 'Ltb4r2', 'Hrh4', 'Irak2', 'Mir7116', 'Il17re', 'Ap3b1', 'Pja2',
+           'Eif2ak1', 'Il17rc', 'Il17d', 'Gsdmd', 'Ttc39aos1', 'Orm2', 'Orm1', 'F12', 'Lat',
+           'Nr1h4', 'Cxcl10', 'Cxcl9', 'Dab2ip', 'Ticam2', 'Tnip2', 'Nlrp1b', 'Tlr4', 'Ccl9',
+           'F2rl1', 'Zfp580', 'Klk1b1', 'Ccl8', 'Il23r', 'Tcirg1', 'Il33', 'Nrros', 'Lacc1',
+           'Tril', 'Itgb6', 'Calca', 'Cd180', 'Acvr1', 'Pla2g2e', 'Ackr2', 'S1pr3', 'Il1rl2',
+           'Ccl17', 'Ccl20', 'Naip7', 'Ggt5', 'Tlr2', 'Mir301', 'Ltb4r1', 'Rps6ka4', 'Trem1',
+           'Casp6', 'Tlr5', 'Myo5a', 'Csf1r', 'Csf1', 'Pik3cg', 'Il34', 'Tyrobp', 'Cxcr3',
+           'Adcy1', 'Cxcl13', 'Serpinb1a', 'Acer3', 'Sema7a', 'Macir', 'Snca', 'Gpr33', 'Jam3',
+           'Hdac7', 'Nupr1', 'Tollip', 'Ccl25', 'Alox5', 'Akt1', 'Ahcy', 'Agtr2', 'Agtr1b',
+           'Agtr1a', 'Agt', 'Cxcl3', 'Adra2a', 'Nlrp6', 'Chst4', 'S100a7a', 'Il18r1', 'Il4ra',
+           'Cxcr2', 'Rel', 'Camk1d', 'P2rx7', 'Cxcl15', 'Ndufs4', 'Epha2', 'Odam', 'Enpp1',
+           'Notch2', 'Notch1', 'Nos2', 'Cxcl2', 'Stab1', 'Cd300a', 'Bmpr1b', 'Ahsg', 'Bcl6',
+           'Ccr5', 'Serpinf2', 'Sigirr', 'Traf3ip2', 'Cx3cl1', 'Pycard', 'Irf5', 'Grn',
+           'Nlrp4a', 'Rela', 'Il20rb', 'Ccl24', 'Zfp35', 'Il36rn', 'Il36a', 'Ddx3x', 'Ecm1',
+           'Stat3', 'Tac4', 'Ccr7', 'Fut4', 'Fn1', 'Fcgr3', 'Tusc2', 'Fasn', 'Csrp3', 'Scyl1',
+           'Ffar3', 'Cd6', 'Tnfaip3', 'Il17b', 'Scyl3', 'Chil1', 'Nlrp9a', 'Kng1', 'Cspg4',
+           'Ackr1', 'C3ar1', 'Nlrp9b', 'Setd4', 'Mtor', 'Ulk4', 'Parp4', 'Chil3', 'Ptgir',
+           'Syk', 'Ccl7', 'Ephx2', 'Ahcyl', 'Rarres2', 'Adora2a', 'Ext1', 'Acod1', 'Tbxa2r',
+           'Loxl3', 'Gja1', 'B4galt1', 'Axl', 'Hyal3', 'Hdac9', 'Mecom', 'Tlr8', 'Tlr7', 
+           'Tlr3', 'Tlr11', 'Tlr12', 'Tlr13', 'Cela1', 'Pla2g10', 'Nfkbiz', 'Sgms1', 'Pla2g7',
+           'Slamf1', 'Hyal1', 'Chil4', 'Hp', 'Reg3b', 'Nlrp10', 'Rasgrp1', 'Hmox1', 'Hmgb2',
+           'Hmgb1', 'Hk1', 'Tlr1', 'Jak2', 'Serpina1b', 'Cd47', 'Itgb2', 'Itgb1', 'Itgav',
+           'Itgam', 'Trim55', 'Nlrc4', 'Il6', 'Il5ra', 'Il4', 'Il2ra', 'Il1rn', 'Il1r1', 
+           'Casp1', 'Il1b', 'Il1a', 'Il13', 'Rbpj', 'Nlrp4e', 'Chia1', 'Themis2', 'Mif',
+           'Clec10a', 'Mep1b', 'Mdk', 'Tpsb2', 'Nlrp4c', 'Pla2g2d', 'Trpv1', 'Afap1l2', 'Aim2',
+           'Ptger4', 'Il23a', 'Lyn', 'Lrp1', 'Anxa1', 'Ffar4', 'Atrn', 'Tlr9', 'Adam8', 'Ccr4',
+           'Casp4', 'Elane', 'Fut7', 'Ifng', 'Alox5ap', 'Ctnnbip1', 'Wdr83', 'Fpr1', 'Plgrkt',
+           'Pnma1', 'Il17ra', 'Il17a', 'Igh-7', 'Ighg1', 'Ighg2a', 'Tlr6', 'Ido1', 'Nlrp4b',
+           'Ncf1', 'Tnfrsf1a', 'Tnfrsf1b', 'Rtn4', 'Icam1', 'Il1f10', 'Ticam1', 'Adcy8', 'Hps1',
+           'Serpina3n', 'Lipa', 'Il17c', 'Krt16', 'Kit', 'Jun', 'Il18', 'Zc3h12a', 'Hck', 'Hc',
+           'Prkcz', 'Ifngr1', 'Ifngr2', 'Scn9a', 'Lxn', 'Pxk', 'Cd5l', 'Prkd1', 'Slc7a2', 
+           'Chil6', 'Rap1gds1', 'Tnf', 'Lta', 'Trex1', 'Camp', 'Nfkbib', 'Ndst1', 'Scnn1b',
+           'Cnr2', 'Ccr1', 'Ccr1l1', 'Ccr3', 'Slc11a1', 'Il31ra', 'Fpr-rs7', 'Fpr-rs6', 'Prcp',
+           'Psen1', 'C5ar2', 'Mir21a', 'Mir155', 'Nampt', 'Dhx9', 'Seh1l', 'Il18rap', 'Lbp',
+           'Il1rap', 'Nkiras2', 'Lncfao', 'Mfhas1', 'Cysltr1', 'Fpr3', 'Vnn1', 'Ccl26', 'Tnip1',
+           'Ninj1', 'Ccl12', 'Ripk1', 'Pld4', 'Ak7', 'Kdm6b', 'Smo', 'Ly96', 'Ly86', 'Xcl1',
+           'Pla2g3', 'Tnfrsf4', 'Tnfsf4', 'Pstpip1', 'P2rx1', 'Pik3cd', 'Adora3', 'Cxcl11',
+           'Plaa', 'Slamf8', 'Ciita', 'Nfe2l2', 'Smpdl3b', 'Prkcq', 'Ccl21a', 'Ccl21b', 'Sdc1',
+           'Chst2', 'Cxcl1', 'S100a9', 'Chil5', 'Il17f', 'C2cd4b', 'Myd88', 'Park7', 'Pbxip1',
+           'H2bc1', 'Itgb2l', 'Elf3', 'Kl', 'Hpse', 'App', 'Stat5b', 'Selp', 'Sele', 'Cfh',
+           'F8', 'F3', 'F2', 'Cebpb', 'Cd68', 'Cd44', 'Cd40lg', 'Cd40', 'Ptafr', 'Stard7',
+           'Cd24a', 'Cd14', 'Aoc3', 'Ccl22', 'Umod', 'Casp7', 'Snap23', 'F7', 'Ano6', 'Ephb6',
+           'Adam17', 'Ptgdr', 'Ccl11', 'Cd163', 'Cmklr1', 'Klkb1', 'Bdkrb2', 'Il36g', 'Itih4',
+           'Ppbp', 'Relb', 'Nfkbid', 'Trp73', 'Tirap', 'Cxcl5', 'Msmp', 'Ccrl2', 'Nlrp1a',
+           'Il25', 'C2cd4a', 'Nlrp4f', 'Mrgpra3', 'Ccl19', 'Gm5849', 'Ffar2', 'Stk39', 'Cers6',
+           'Camk4', 'S100a8', 'C5ar1', 'C3', 'C1qa', 'Tac1', 'Bmp6', 'Bmp2', 'Bdkrb1',
+           'Mapkapk2', 'Psen2', 'Rps6ka5', 'Unc13d', 'Ccl6', 'Ccl5', 'Ccl4', 'Ccl3', 'Ccl2',
+           'Ccl1', 'Ager', 'Plscr1', 'Saa4', 'Saa3', 'Saa2', 'Saa1', 'Aif1', 'Pf4', 'Ms4a2',
+           'Fcer1g', 'Fcgr1', 'Trem2', 'Gbp5', 'Cyba', 'Sphk1', 'Map2k3', 'Mapk8', 'Aimp1',
+           'Nod2', 'Prdx2', 'Ywhaz', 'Wnk4', 'Smad1', 'Lilrb4a', 'Reg3a', 'Reg3g', 'F2r',
+           'Naip2', 'Naip1', 'Naip6', 'Naip5', 'Chst1', 'Gper1', 'Cybb', 'Il36b', 'Nlrp9c',
+           'Ccr6', 'Hdac5', 'Pld3', 'Serpinb9', 'Cyp26b1', 'Mylk3', 'Olr1', 'Dhrs7b', 'Fpr2',
+           'Fpr-rs3', 'Fpr-rs4', 'Crlf2', 'Hif1a', 'Mir883b', 'Cd96', 'Crp', 'Timp1', 'Thbs1',
+           'Tgfb1', 'Crhbp', 'Crh', 'Cr2', 'Ccr2', 'Havcr2', 'Cntf', 'Clu', 'Lias', 'Hnrnpa0',
+           'Il27', 'Cxcr6', 'Cntnap2', 'Ptn', 'Tspan2', 'Ccl21c', 'Ptgs2', 'Ptgs1', 'Ptgfr',
+           'Ptger3', 'Ptger2', 'Ptger1', 'Pparg', 'Polb', 'Cx3cr1', 'Nlrp3', 'Plp1', 'Dpep1')
+
+IMM_DN.int = AddModuleScore(IMM_DN.int, features = list(Immune = Immune), name = "GOterm")
+
+FeaturePlot(IMM_DN.int, "GOterm1", min.cutoff = "q5", max.cutoff = "q95") +
+  labs(title = "Inflammatory response") + NoAxes()
+
+IMM_DN.int$imm_dn_group = factor(IMM_DN.int$orig.ident,
+                                 levels = c("STD_IMM_d0", "GW_IMM_d0",
+                                            "STD_DN_d0","GW_DN_d0"))
+vp = VlnPlot(IMM_DN.int, "GOterm1", group.by = "imm_dn_group") + labs(title = "Inflammatory response") + NoLegend()
+violins = vp$layers[[1]]
+vp$layers[[1]] = vp$layers[[2]]
+violins$aes_params$alpha = 0.5
+vp$layers[[2]] = violins
+vp
+
+```
+
+
+
+```{r}
+
+sessionInfo()
+
+```
+

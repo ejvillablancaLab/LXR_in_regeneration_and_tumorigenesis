@@ -1,0 +1,249 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup, cache = FALSE}
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(cowplot)
+    library(ggplot2)
+    library(pheatmap)
+    library(rafalib)
+    library(clustree)
+})
+ 
+library(future)
+plan("multiprocess", workers = 8)
+options(future.globals.maxSize = 48000 * 1024^2)
+
+```
+
+
+
+# Graph clustering
+
+
+```{r}
+
+
+if(!file.exists("../analysis/filtered_EPI_int_clus.rds")){
+  alldata = readRDS(file = "../analysis/filtered_EPI_int.rds")
+  alldata@active.assay = "CCA"
+
+alldata <- FindNeighbors(alldata, dims = 1:30, k.param = 350, prune.SNN = 1/15)
+names(alldata@graphs)
+
+pheatmap(alldata@graphs$CCA_nn[1:200, 1:200], col = c("white", "black"), border_color = "grey90", 
+    legend = F, cluster_rows = F, cluster_cols = F, fontsize = 2)
+
+# Clustering with louvain (algorithm 1)
+for (res in c(0.1, 0.25, 0.5, 1, 1.5, 2)) {
+    alldata <- FindClusters(alldata, graph.name = "CCA_snn",
+                            resolution = res, algorithm = 1)
+}
+
+
+saveRDS(alldata, file = "../analysis/filtered_EPI_int_clus.rds")
+
+}else{
+  alldata = readRDS(file = "../analysis/filtered_EPI_int_clus.rds")
+}
+
+
+```
+
+```{r dimplots, fig.height=10}
+
+plot_grid(ncol = 2, 
+          DimPlot(alldata, reduction = "umap", group.by = "CCA_snn_res.0.5", 
+                  label = TRUE) + NoLegend() + 
+            ggtitle("louvain_0.5") + theme(legend.position = "bottom"),
+          DimPlot(alldata, reduction = "umap", group.by = "CCA_snn_res.1", 
+                  label = TRUE) + NoLegend() + 
+            ggtitle("louvain_1") + theme(legend.position = "bottom"), 
+          DimPlot(alldata, reduction = "umap", group.by = "CCA_snn_res.1.5", 
+                  label = TRUE) + NoLegend() + 
+            ggtitle("louvain_1.5") + theme(legend.position = "bottom"),
+          DimPlot(alldata, reduction = "umap", group.by = "CCA_snn_res.2", 
+                  label = TRUE) + NoLegend() + 
+            ggtitle("louvain_2") + theme(legend.position = "bottom"))
+
+
+```
+
+```{r clustreeplot}
+
+clustree(alldata@meta.data, prefix = "CCA_snn_res.")
+
+
+```
+
+## QC, CCA louvain 0.5
+
+
+```{r}
+
+table(alldata$CCA_snn_res.0.5)
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.0.5" , 
+    ncol = 3, pt.size = 0.1)
+
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.0.5" , 
+    ncol = 3, pt.size = 0)
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=CCA_snn_res.0.5, fill=orig.ident)) + geom_bar(position = "fill")
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=orig.ident, fill=CCA_snn_res.0.5)) + geom_bar(position = "fill")
+
+
+ggplot(alldata@meta.data, aes(x=Type, fill=CCA_snn_res.0.5)) + geom_bar(position = "fill")
+
+ggplot(alldata@meta.data, aes(fill=Type, x=CCA_snn_res.0.5)) + geom_bar(position = "fill")
+
+
+DotPlot(alldata, features = c("Ptprc","Epcam"), group.by = "CCA_snn_res.0.5",
+    assay = "CCA") + coord_flip()
+
+```
+
+## QC, CCA louvain 1
+
+
+```{r}
+
+table(alldata$CCA_snn_res.1)
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.1" , 
+    ncol = 3, pt.size = 0.1)
+
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.1" , 
+    ncol = 3, pt.size = 0)
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=CCA_snn_res.1, fill=orig.ident)) + geom_bar(position = "fill")
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=orig.ident, fill=CCA_snn_res.1)) + geom_bar(position = "fill")
+
+
+ggplot(alldata@meta.data, aes(x=Type, fill=CCA_snn_res.1)) + geom_bar(position = "fill")
+
+ggplot(alldata@meta.data, aes(fill=Type, x=CCA_snn_res.1)) + geom_bar(position = "fill")
+
+DotPlot(alldata, features = c("Ptprc","Epcam"), group.by = "CCA_snn_res.1",
+    assay = "CCA") + coord_flip()
+
+```
+
+
+
+## QC, CCA louvain 1.5
+
+
+```{r}
+
+table(alldata$CCA_snn_res.1.5)
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo",
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.1.5" ,
+    ncol = 3, pt.size = 0.1)
+
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo",
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.1.5" ,
+    ncol = 3, pt.size = 0)
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=CCA_snn_res.1.5, fill=orig.ident)) + geom_bar(position = "fill")
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=orig.ident, fill=CCA_snn_res.1.5)) + geom_bar(position = "fill")
+
+
+ggplot(alldata@meta.data, aes(x=Type, fill=CCA_snn_res.1.5)) + geom_bar(position = "fill")
+
+ggplot(alldata@meta.data, aes(fill=Type, x=CCA_snn_res.1.5)) + geom_bar(position = "fill")
+
+DotPlot(alldata, features = c("Ptprc","Epcam"), group.by = "CCA_snn_res.1.5",
+    assay = "CCA") + coord_flip()
+
+```
+
+
+
+## QC, CCA louvain 2
+
+
+```{r}
+
+table(alldata$CCA_snn_res.2)
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.2" , 
+    ncol = 3, pt.size = 0.1)
+
+VlnPlot(alldata, features = c("nFeature_CCA", "nCount_CCA", "percent_mito", "percent_ribo", 
+                              "S.Score", "G2M.Score"), group.by = "CCA_snn_res.2" , 
+    ncol = 3, pt.size = 0)
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=CCA_snn_res.2, fill=orig.ident)) + geom_bar(position = "fill")
+
+
+#plot as proportion or percentage of cluster
+ggplot(alldata@meta.data, aes(x=orig.ident, fill=CCA_snn_res.2)) + geom_bar(position = "fill")
+
+ggplot(alldata@meta.data, aes(x=Type, fill=CCA_snn_res.2)) + geom_bar(position = "fill")
+
+ggplot(alldata@meta.data, aes(fill=Type, x=CCA_snn_res.2)) + geom_bar(position = "fill")
+
+
+DotPlot(alldata, features = c("Ptprc","Epcam"), group.by = "CCA_snn_res.2",
+    assay = "CCA") + coord_flip()
+
+```
+
+
+# Save data
+
+```{r}
+
+```

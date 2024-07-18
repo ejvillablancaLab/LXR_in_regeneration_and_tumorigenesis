@@ -1,0 +1,355 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup, include=FALSE}
+
+library(Seurat)
+library(Matrix)
+#remotes::install_github("chris-mcginnis-ucsf/DoubletFinder", upgrade = F)
+library(DoubletFinder)
+library(ggplot2)
+
+
+PATH = "/Volumes/jenfra/Private/Projects/Das/sc_irradiation"
+
+
+# Custom functions
+
+# Basic function to convert human to mouse gene names
+
+
+convertHumanGeneList <- function(x){
+  require("biomaRt")
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  
+  genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+  
+  humanx <- unique(genesV2[, 2])
+  
+  # Print the first 6 genes found to the screen
+  #print(head(humanx))
+  return(humanx)
+}
+
+## This is run early due to frequent connection problems with BioMart
+
+# g2mFeat = convertHumanGeneList(cc.genes$g2m.genes)
+g2mFeat = c("Smc4","Dlgap5","Ctcf","Cdc25c","Gtse1","Kif20b","Ttk","Tacc3","Top2a","Tpx2","Cdca3","Ncapd2",
+"Cks2","Anp32e","G2e3","Lbr","Cdca2","Cks1brt","Ckap2","Hmgb2","Kif11","Nek2","Cenpe","Hjurp",
+"Ect2","Aurkb","Cks1b","Kif23","Nuf2","Hmmr","Cdca8","Psrc1","Anln","Cdc20","Birc5","Ndc80",
+"Rangap1","Ckap5","Kif2c","Cenpf","Nusap1","Cenpa","Aurka","Ube2c","Ckap2l","Mki67","Tubb4b","Bub1",
+"Ccnb2")
+#sFeat = convertHumanGeneList(cc.genes$s.genes)
+sFeat = c("Msh2","Exo1","Mcm4","Rrm2","Mcm2","Chaf1b","Gmnn","Cdc45","Slbp","Ubr7","Cdc6",
+"Rad51ap1","Rpa2","Hells","Fen1","Gins2","Uhrf1","Mcm6","Ung","Dscc1","Usp1","Clspn",
+"Cdca7","Pola1","Nasp","Dtl","Mcm5","Wdr76","Prim1","Casp8ap2","Tipin","Blm","Rrm1",
+"Brip1","Rad51","Tyms","E2f8","Rfc2","Ccne2","Pcna")
+
+```
+
+
+# Load data
+
+```{r loading, echo=FALSE}
+
+
+if(!file.exists("../analysis/original_data.rds")){
+  dirs = list.files(PATH, recursive = FALSE)
+  datalist = lapply(dirs[grep("_d0",dirs)], function(d){
+    CreateSeuratObject(Read10X_h5(filename = paste0(PATH,"/",d,"/outs/filtered_feature_bc_matrix.h5")),
+                      d)
+  })
+  names(datalist) = dirs[grep("_d0",dirs)]
+  
+  alldata = merge(x = datalist[[1]], y = datalist[-1], add.cell.ids = names(datalist))
+  
+  unique(alldata$orig.ident)
+  saveRDS(alldata, "../analysis/original_data.rds")
+  
+}else{
+  alldata = readRDS("../analysis/original_data.rds")
+}
+
+
+
+```
+
+
+
+# Plot QC vars
+
+Number of features and counts and percentage of mitochondrial and ribosomal RNA are plotted below. Red lines mark limits for filtering.
+
+```{r qc, fig.height=10}
+
+
+
+alldata <- PercentageFeatureSet(alldata, "^mt-", col.name = "percent_mito")
+
+alldata <- PercentageFeatureSet(alldata, "^Rp[sl]", col.name = "percent_ribo")
+
+alldata <- PercentageFeatureSet(alldata, "^Hb.-", col.name = "percent_hb")
+
+
+mito_thresh = 10
+ribo_thresh = 5
+feat_thresh = 400
+hb_thresh = 25
+
+
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+glist = VlnPlot(alldata, group.by = "orig.ident", features = feats,  combine = FALSE, pt.size = 0)
+names(glist) = feats
+glist = lapply(glist, function(x){x + NoLegend() + 
+    geom_point(position = position_jitter(), alpha = 0.1, size = 0.1)})
+
+
+cowplot::plot_grid(align = "v",plotlist = list(glist[["nFeature_RNA"]] + geom_hline(yintercept = feat_thresh, color = "red"),
+glist[["nCount_RNA"]],
+glist[["percent_mito"]] + geom_hline(yintercept = mito_thresh, color = "red") ,
+glist[["percent_ribo"]] + geom_hline(yintercept = ribo_thresh, color = "red")),
+glist[["percent_hb"]] + geom_hline(yintercept = hb_thresh, color = "red"))
+
+
+FeatureScatter(alldata, "nCount_RNA", "nFeature_RNA", group.by = "orig.ident", pt.size = 0.5,
+                shuffle = TRUE) + geom_hline(yintercept = feat_thresh)
+
+FeatureScatter(alldata, "percent_ribo", "percent_mito", group.by = "orig.ident", pt.size = 0.5,
+                shuffle = TRUE) + geom_hline(yintercept = mito_thresh) + 
+  geom_hline(yintercept = mito_thresh) +
+  geom_vline(xintercept = ribo_thresh)
+
+FeatureScatter(subset(alldata, idents = c("GW_EPI_d0", "STD_EPI_d0")),
+               "percent_ribo", "percent_mito", group.by = "orig.ident",
+               pt.size = 0.5, shuffle = TRUE, raster = TRUE) + 
+  geom_hline(yintercept = mito_thresh) +
+  geom_vline(xintercept = ribo_thresh)
+
+```
+
+# Filter cells and genes
+
+The same QC as above are plotted below, only including cells and genes that pass filtering limits (gene limit: > 3 copies expressed). The top expressed genes are also shown. Mitochondrial and ribosomal genes are filtered out of the data. 
+
+```{r filtering, fig.height = 10}
+
+selected_c <- WhichCells(alldata, expression = nFeature_RNA > feat_thresh)
+selected_f <- rownames(alldata)[Matrix::rowSums(alldata) > 3]
+
+data.filt <- subset(alldata, features = selected_f, cells = selected_c)
+
+selected_mito <- WhichCells(data.filt, expression = percent_mito < 10)
+selected_ribo <- WhichCells(data.filt, expression = percent_ribo > 5)
+selected_hb <- WhichCells(data.filt, expression = percent_hb < 25)
+
+# and subset the object to only keep those cells
+data.filt <- subset(data.filt, cells = intersect(selected_hb,intersect(selected_mito, selected_ribo)))
+
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo")
+VlnPlot(data.filt, group.by = "orig.ident", features = feats, pt.size = 0.1, ncol = 2) + 
+    NoLegend()
+VlnPlot(data.filt, group.by = "orig.ident", features = feats, pt.size = 0, ncol = 2) + 
+    NoLegend()
+
+
+
+par(mar = c(4, 8, 2, 1))
+C <- data.filt@assays$RNA@counts
+C <- Matrix::t(Matrix::t(C)/Matrix::colSums(C)) * 100
+
+most_expressed <- order(apply(C, 1, median), decreasing = T)[20:1]
+
+# potentials = list()
+# for(i in seq(1,dim(C)[2],20000)){
+#   potentials[[length(potentials)+1]] = rownames(C)[order(apply(C[,i:min(i+19999, dim(C)[2])], 1, median), decreasing = T)[1000:1]]
+# }
+# length(unique(unlist(potentials)))
+# 
+# 
+# most_expressed <- order(apply(C[unique(unlist(potentials)),], 1, median), decreasing = T)[20:1]
+
+
+boxplot(as.matrix(t(C[most_expressed, ])), cex = 0.1, las = 1, xlab = "% total count per cell",
+    col = (scales::hue_pal())(20)[20:1], horizontal = TRUE)
+
+# Filter Malat1, Gm42418
+data.filt <- data.filt[!grepl("Malat1", rownames(data.filt)), ]
+data.filt <- data.filt[!grepl("Gm42418", rownames(data.filt)), ]
+
+# Filter Mitocondrial
+data.filt <- data.filt[!grepl("^mt-", rownames(data.filt)), ]
+
+# Filter Ribossomal gene (optional if that is a problem on your data) data.filt
+data.filt <- data.filt[ ! grepl('^Rp[sl]', rownames(data.filt)), ]
+
+# Filter Hemoglobin gene (optional if that is a problem on your data)
+data.filt <- data.filt[!grepl("^Hb.-", rownames(data.filt)), ]
+
+# saveRDS(data.filt, "../analysis/data_pre_cellcycle.rds")
+
+``` 
+
+# Analyze cell cycle
+
+The S-phase and G2M-phase scores are calculated based on the cell cycle gene lists defined in the Seurat package (translated to mouse genes using biomaRt).
+
+```{r cellcycle}
+# Before running CellCycleScoring the data need to be normalized and
+# logtransformed.
+
+data.filt = NormalizeData(data.filt)
+
+data.filt <- CellCycleScoring(object = data.filt, g2m.features = g2mFeat, 
+    s.features = sFeat)
+
+VlnPlot(data.filt, features = c("S.Score", "G2M.Score"), group.by = "orig.ident", 
+    ncol = 3, pt.size = 0.1)
+
+```
+
+
+# Find Doublets
+
+Doublets are identified and excluded using the DoubletFinder package.
+
+```{r doublets}
+
+if(file.exists(( "../analysis/filtered_data_presweep.rds"))){
+  data.filt = readRDS( "../analysis/filtered_data_presweep.rds")
+}else{
+  data.filt = FindVariableFeatures(data.filt, verbose = F)
+  data.filt = ScaleData(data.filt, vars.to.regress = c("nFeature_RNA", "percent_mito"), 
+      verbose = F)
+  data.filt = RunPCA(data.filt, verbose = F, npcs = 20)
+  data.filt = RunUMAP(data.filt, dims = 1:10, verbose = F)
+  
+  saveRDS(data.filt, "../analysis/filtered_data_presweep.rds")
+}
+
+
+
+
+if(file.exists("../analysis/sweeplist.RData")){
+  load("../analysis/sweeplist.RData")
+}else{
+  sweeplist=list()
+  for(i in unique(data.filt$orig.ident)){
+    data.filt.subset=subset(data.filt, idents = i)
+    sweep.res <- paramSweep_v3(data.filt.subset)#, num.cores = 3)
+    sweep.stats <- summarizeSweep(sweep.res, GT = FALSE)
+    bcmvn <- find.pK(sweep.stats)
+    
+    sweeplist[[i]] = bcmvn
+    
+  }
+  
+  save(sweeplist, file = "../analysis/sweeplist.RData")
+}
+
+
+if(file.exists("../analysis/singletList.RData")){
+  load("../analysis/singletList.RData")
+}else{
+  singletList = list()
+  
+  
+  for(i in unique(data.filt$orig.ident)){
+    data.filt.subset=subset(data.filt, idents = i)
+    nExp <- round(ncol(data.filt.subset) * 0.08)  # expect 8% doublets
+    mypK = as.numeric(as.character(sweeplist[[i]]$pK[which.max(sweeplist[[i]]$BCmetric)]))
+    data.filt.subset <- doubletFinder_v3(data.filt.subset, pN = 0.25, pK = mypK, nExp = nExp, PCs = 1:10)
+    DF.name = colnames(data.filt.subset@meta.data)[grepl("DF.classification", colnames(data.filt.subset@meta.data))]
+    singletList[[i]] = data.filt.subset@meta.data[, DF.name]
+    names(singletList[[i]]) = colnames(data.filt.subset)
+  }
+  
+  save(singletList, file = "../analysis/singletList.RData")
+}
+
+
+# sweep.res <- paramSweep_v3(data.filt)#, num.cores = 3)
+# sweep.stats <- summarizeSweep(sweep.res, GT = FALSE)
+# bcmvn <- find.pK(sweep.stats)
+# par(mar = c(4, 4, 2, 2))
+# barplot(bcmvn$BCmetric, names.arg =bcmvn$pK, las=2)
+
+
+
+
+
+#data.filt@meta.data$DF = unlist(singletList)[match(colnames(data.filt), gsub(".*\\.","",names(unlist(singletList))))]
+data.filt = AddMetaData(data.filt, unlist(singletList)[match(colnames(data.filt), gsub(".*\\.","",names(unlist(singletList))))], "DF")
+
+cowplot::plot_grid(ncol = 2, DimPlot(data.filt, group.by = "orig.ident") + NoAxes(), 
+    DimPlot(data.filt, group.by = "DF") + NoAxes())
+
+
+DimPlot(data.filt, group.by = "DF", split.by = "orig.ident", ncol = 4) + NoAxes()
+
+
+
+
+VlnPlot(data.filt, features = "nFeature_RNA", group.by = "DF",pt.size = 0.1)
+VlnPlot(data.filt, features = "nFeature_RNA", split.by = "DF", group.by = "orig.ident", pt.size = 0.1)
+
+
+data.filt = data.filt[, data.filt@meta.data[, "DF"] == "Singlet"]
+
+
+
+cellfreq = as.data.frame(table(data.filt$orig.ident), stringsAsFactors = FALSE)
+cellfreq$Day = sapply(cellfreq$Var1, function(x){strsplit(x, "_")[[1]][3]})
+cellfreq$Type = sapply(cellfreq$Var1, function(x){strsplit(x, "_")[[1]][2]})
+cellfreq$Treatment = sapply(cellfreq$Var1, function(x){strsplit(x, "_")[[1]][1]})
+#png("/Volumes/tank/Private/Meetings/Lab meetings/MyLabMeetings/20210621/FilteredCellNumbers.png", res = 240, width = 1200, height = 800)
+ggplot(cellfreq, aes(x = paste(Day, Treatment), y = Freq, color = Type)) + geom_point() + 
+  theme(panel.background = element_blank(), legend.key = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(x = "Day and treatment", y = "Number of cells") +
+  ylim(0,NA)
+#dev.off()
+
+
+
+```
+
+Final cell counts:
+`r knitr::kable(table(data.filt$orig.ident))`
+
+
+```{r final}
+
+saveRDS(data.filt, file = "../analysis/filtered_data.rds")
+
+
+sessionInfo()
+
+```
+
+
+
+

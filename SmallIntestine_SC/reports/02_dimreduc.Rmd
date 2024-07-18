@@ -1,0 +1,168 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup, include=FALSE}
+
+
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(cowplot)
+    library(ggplot2)
+})
+
+
+# remove.packages("Matrix")
+# packageurl <- "https://cran.r-project.org/src/contrib/Archive/Matrix/Matrix_1.3-2.tar.gz"
+# install.packages(packageurl, repos=NULL, type="source")
+
+if(file.exists("../analysis/filtered_data_dr.rds")){
+  alldata = readRDS("../analysis/filtered_data_dr.rds")
+}else{
+  alldata <- readRDS("../analysis/filtered_data.rds")
+  
+  
+  
+  alldata = AddMetaData(alldata, sapply(colnames(alldata), function(x){strsplit(x, "_")[[1]][3]}), "Day")
+  alldata = AddMetaData(alldata, sapply(colnames(alldata), function(x){strsplit(x, "_")[[1]][2]}),
+                        "Type")
+  alldata = AddMetaData(alldata, sapply(colnames(alldata), function(x){strsplit(x, "_")[[1]][1]}), "Treatment")
+  alldata = AddMetaData(alldata, paste0(alldata$Day, "_", alldata$Treatment), "DayTreatment")
+
+  suppressWarnings(suppressMessages(alldata <- FindVariableFeatures(alldata, selection.method = "vst", 
+    nfeatures = 2000, verbose = FALSE, assay = "RNA")))
+  
+  alldata <- ScaleData(alldata, vars.to.regress = c("percent_mito", "nFeature_RNA"), 
+    assay = "RNA")
+  
+  alldata <- RunPCA(alldata, npcs = 50, verbose = F)
+  
+  alldata <- RunUMAP(alldata, reduction = "pca", dims = 1:30, n.components = 2, n.neighbors = 30, 
+    n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+
+  
+  saveRDS(alldata, file = "../analysis/filtered_data_dr.rds")
+}
+
+```
+
+
+# Find variable genes
+
+```{r, echo=FALSE}
+
+
+top20 <- head(VariableFeatures(alldata), 20)
+
+LabelPoints(plot = VariableFeaturePlot(alldata), points = top20, repel = TRUE)
+```
+
+
+# PCA
+
+```{r, echo=FALSE}
+
+
+
+
+plot_grid(ncol = 3, 
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 1:2) + NoLegend(),
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 3:4) + NoLegend(),
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 5:6) + NoLegend())
+
+
+VizDimLoadings(alldata, dims = 1:5, reduction = "pca", ncol = 5, balanced = T)
+
+ElbowPlot(alldata, reduction = "pca", ndims = 50)
+
+```
+
+
+# UMAP
+
+```{r, echo=FALSE}
+
+
+plot_grid(ncol = 2, DimPlot(alldata, reduction = "pca", group.by = "orig.ident",shuffle = TRUE) +
+            NoLegend() + NoAxes() + labs(title = "PCA"),
+    DimPlot(alldata, reduction = "umap", group.by = "orig.ident", shuffle = TRUE) +
+      NoLegend() + NoAxes() + labs(title = "UMAP"))
+
+
+plot_grid(ncol = 2,
+          DimPlot(alldata, reduction = "pca", group.by = "Type", shuffle = TRUE, label = TRUE) +
+            NoLegend() + NoAxes() + labs(title = "PCA"), 
+          DimPlot(alldata, reduction = "umap", group.by = "Type", label = TRUE) +
+            NoLegend() + NoAxes() + labs(title = "UMAP"))
+
+
+
+
+```
+
+
+```{r, fig.height=8}
+
+plot_grid(ncol = 2, DimPlot(alldata, reduction = "umap", group.by = "orig.ident", shuffle = TRUE) + 
+            NoLegend() + NoAxes(), 
+          DimPlot(alldata, reduction = "umap", group.by = "Type", label = TRUE, shuffle = TRUE) + 
+            NoLegend() + NoAxes(),
+          DimPlot(alldata, reduction = "umap", group.by = "Treatment", shuffle = TRUE) + 
+            theme(legend.position = "bottom") + NoAxes())
+
+```
+
+
+
+```{r}
+
+DimPlot(alldata, reduction = "umap", split.by = "Treatment",
+        group.by = "Type", shuffle = TRUE) + 
+            theme(legend.position = "bottom") + NoAxes()
+
+```
+
+```{r}
+
+FeaturePlot(alldata, reduction = "umap", features = c("Ptprc","Epcam"), 
+    order = T, slot = "data", combine = T)
+
+FeaturePlot(alldata, reduction = "umap", features = c("Ptprc"), 
+    order = T, slot = "data", combine = T, split.by = "Type")
+
+FeaturePlot(alldata, reduction = "umap", features = c("Epcam"), 
+    order = T, slot = "data", combine = T, split.by = "Type")
+
+```
+
+\newpage
+
+```{r}
+
+sessionInfo()
+
+```
+

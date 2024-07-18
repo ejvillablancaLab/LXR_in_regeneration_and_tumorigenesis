@@ -1,0 +1,57 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE,
+                      cache = TRUE, 
+                      cache.lazy = FALSE)
+
+
+```
+
+```{r setup, cache = FALSE}
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(cowplot)
+    library(ggplot2)
+    library(pheatmap)
+    library(rafalib)
+    library(clustree)
+})
+ 
+library(future)
+plan("multiprocess", workers = 20)
+options(future.globals.maxSize = 120000 * 1024^2)
+
+```
+
+```{r loaddata}
+
+alldata <- readRDS("../analysis/filtered_data_dr.rds")
+
+alldata = SetIdent(alldata, value = "Type")
+alldata_IMM = subset(alldata, idents = c("IMM","DN"))
+alldata_EPI = subset(alldata, idents = "EPI")
+
+saveRDS(alldata_IMM, "../analysis/filtered_IMM_DN.rds")
+saveRDS(alldata_EPI, "../analysis/filtered_EPI.rds")
+
+```

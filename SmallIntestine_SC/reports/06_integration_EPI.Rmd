@@ -1,0 +1,154 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup, include=FALSE}
+
+
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(cowplot)
+    library(ggplot2)
+})
+
+
+```
+
+
+
+# Integrate data
+
+```{r}
+
+
+library(future)
+plan("multiprocess", workers = 20)
+options(future.globals.maxSize = 120000 * 1024^2)
+
+print("EPI")
+
+
+if(!file.exists("../analysis/filtered_EPI_int.rds")){
+  if(!file.exists("../analysis/EPI.anchors.rds")){
+    
+    EPI.all <- readRDS("../analysis/filtered_EPI_dr.rds")
+    
+    EPI.list <- SplitObject(EPI.all, split.by = "orig.ident")
+    
+    x = EPI.list
+    for (i in 1:length(x)) {
+        x[[i]] <- NormalizeData(x[[i]], verbose = FALSE)
+        x[[i]] <- FindVariableFeatures(x[[i]], selection.method = "vst",
+            nfeatures = 2000, verbose = FALSE)
+    }
+    EPI.list = x
+    
+    EPI.anchors <- FindIntegrationAnchors(object.list = EPI.list, dims = 1:30, 
+        reduction = "cca")
+    
+    saveRDS(EPI.anchors,"../analysis/EPI.anchors.rds")
+    
+    
+    rm(EPI.list)
+    gc()
+  }else{
+    
+    EPI.all <- readRDS("../analysis/filtered_EPI_clus_dr.rds")
+    EPI.anchors = readRDS("../analysis/EPI.anchors.rds")
+  
+  }
+  
+  EPI.int <- IntegrateData(anchorset = EPI.anchors, dims = 1:30, new.assay.name = "CCA")
+
+  saveRDS(EPI.int, "../analysis/filtered_EPI_int.rds")
+  
+  rm(EPI.anchors)
+  gc()
+  
+  EPI.int <- ScaleData(EPI.int)
+  #EPI.int <- ScaleData(EPI.int, assay = "RNA")
+  EPI.int <- RunPCA(EPI.int, npcs = 30, verbose = FALSE)
+  EPI.int <- RunUMAP(EPI.int, dims = 1:30)
+  #EPI.int <- RunTSNE(EPI.int, dims = 1:30)
+  
+  saveRDS(EPI.int, "../analysis/filtered_EPI_int.rds")
+}else{
+  EPI.int = readRDS("../analysis/filtered_EPI_int.rds")
+  EPI.all <- readRDS("../analysis/filtered_EPI_dr.rds")
+}
+
+
+plot_grid(ncol = 2,
+  DimPlot(EPI.all, reduction = "pca", group.by = "orig.ident", 
+          pt.size = 0.01, shuffle = TRUE) +
+    NoAxes() + ggtitle("PCA raw_data"),
+  DimPlot(EPI.all, reduction = "umap", group.by = "orig.ident", 
+          pt.size = 0.01, shuffle = TRUE) +
+    NoAxes() + ggtitle("UMAP raw_data"),
+  
+  DimPlot(EPI.int, reduction = "pca", group.by = "orig.ident",
+          shuffle = TRUE) +
+    NoAxes() + ggtitle("PCA integrated"),
+  DimPlot(EPI.int, reduction = "umap", group.by = "orig.ident",
+          shuffle = TRUE) +
+    NoAxes() + ggtitle("UMAP integrated")
+)
+
+
+
+```
+
+# Plot QC in UMAP
+
+```{r, fig.height = 10}
+
+FeaturePlot(EPI.int, reduction = "umap", features = c("percent_mito","percent_ribo","S.Score", "G2M.Score", "nFeature_RNA"), 
+    order = T, slot = "data", combine = T)
+
+```
+
+
+
+# Plot genes of interest
+
+```{r}
+
+DefaultAssay(EPI.int) = "RNA"
+
+FeaturePlot(EPI.int, reduction = "umap", features = c("Mki67","Pcna"), 
+    order = T, slot = "data", combine = T)
+
+FeaturePlot(EPI.int, reduction = "umap", features = c("Ptprc","Epcam"), 
+    order = T, slot = "data", combine = T)
+
+
+```
+
+```{r}
+
+sessionInfo()
+
+```

@@ -1,0 +1,145 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+  pdf_document:
+    toc: yes
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 10,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup}
+
+
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(cowplot)
+    library(ggplot2)
+})
+
+library(future)
+plan("multiprocess", workers = 4)
+options(future.globals.maxSize = 24000 * 1024^2)
+
+# remove.packages("Matrix")
+# packageurl <- "https://cran.r-project.org/src/contrib/Archive/Matrix/Matrix_1.3-2.tar.gz"
+# install.packages(packageurl, repos=NULL, type="source")
+
+if(!file.exists("../analysis/filtered_EPI_dr.rds")){
+  alldata <- readRDS("../analysis/filtered_EPI.rds")
+  
+  DefaultAssay(alldata) = "RNA"
+  
+  suppressWarnings(suppressMessages(alldata <- FindVariableFeatures(alldata, selection.method = "vst", 
+    nfeatures = 2000, verbose = FALSE, assay = "RNA")))
+  alldata <- ScaleData(alldata, vars.to.regress = c("percent_mito", "nFeature_RNA"), 
+    assay = "RNA")
+  alldata <- RunPCA(alldata, npcs = 50, verbose = F)
+  
+  alldata <- RunUMAP(alldata, reduction = "pca", dims = 1:20, n.components = 2, n.neighbors = 30, 
+    n.epochs = 200, min.dist = 0.3, learning.rate = 1, spread = 1)
+  
+  saveRDS(alldata, file = "../analysis/filtered_EPI_dr.rds")
+}else{
+  
+  alldata = readRDS("../analysis/filtered_EPI_dr.rds")
+}
+
+```
+
+
+# Find variable genes
+
+```{r}
+
+
+top20 <- head(VariableFeatures(alldata), 20)
+
+LabelPoints(plot = VariableFeaturePlot(alldata), points = top20, repel = TRUE)
+```
+
+# Z-score transformation
+
+```{r}
+
+
+
+```
+
+
+# PCA
+
+```{r}
+
+
+
+plot_grid(ncol = 3, 
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 1:2) + NoLegend(),
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 3:4) + NoLegend(),
+          DimPlot(alldata, reduction = "pca", group.by = "orig.ident", dims = 5:6) + NoLegend())
+
+
+VizDimLoadings(alldata, dims = 1:5, reduction = "pca", ncol = 5, balanced = T)
+
+ElbowPlot(alldata, reduction = "pca", ndims = 50)
+
+```
+
+
+
+# UMAP
+
+```{r, fig.height = 7}
+
+
+
+plot_grid(ncol = 2, DimPlot(alldata, reduction = "pca", group.by = "orig.ident",shuffle = TRUE) +
+            NoLegend() + NoAxes(),
+    DimPlot(alldata, reduction = "umap", group.by = "orig.ident", shuffle = TRUE) +
+      NoLegend() + NoAxes(),
+    DimPlot(alldata, reduction = "umap", group.by = "Treatment", shuffle = TRUE) + 
+            theme(legend.position = "bottom") + NoAxes())
+```
+
+
+
+
+```{r}
+
+FeaturePlot(alldata, reduction = "umap", features = c("Ptprc","Epcam"), 
+    order = T, slot = "data", combine = T)
+```
+
+
+
+
+```{r, fig.height=10}
+FeaturePlot(alldata, reduction = "umap", features = c("percent_mito","percent_ribo","S.Score", "G2M.Score", "nFeature_RNA"), 
+    order = T, slot = "data", combine = T)
+
+```
+
+
+
+```{r}
+
+sessionInfo()
+
+```

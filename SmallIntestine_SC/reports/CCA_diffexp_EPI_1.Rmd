@@ -1,0 +1,533 @@
+---
+title: "`r params$project_title`"
+editor_options:
+  chunk_output_type: console
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document:
+    toc: yes
+  bookdown::html_document2:
+    code_folding: hide
+    toc: yes
+    toc_float:
+      collapsed: no
+params:
+  dataset: 1
+---
+
+```{r Setup, echo = FALSE}
+knitr::opts_chunk$set(fig.width  = 7,
+                      results    = "hold",
+                      message    = FALSE,
+                      warning    = FALSE)
+
+
+```
+
+```{r setup}
+
+suppressPackageStartupMessages({
+    library(Seurat)
+    library(venn)
+    library(dplyr)
+    library(cowplot)
+    library(ggplot2)
+    library(pheatmap)
+    library(enrichR)
+    library(rafalib)
+    library(cowplot)
+  library(gplots) 
+  library(ggrepel)
+})
+
+
+plottheme = theme(legend.title = element_text(size = 8),
+                  legend.text = element_text(size = 8),
+                  axis.title = element_text(size = 8),
+                  axis.text = element_text(size = 8),
+                  plot.title = element_text(size = 8))
+
+
+# library(future)
+# plan("multiprocess", workers = 4)
+# options(future.globals.maxSize = 24000 * 1024^2)
+
+alldata <- readRDS("../analysis/filtered_EPI_int_clus.rds")
+
+# Set desired clustering resolution
+sel.lev = 1
+
+# Set the identity as louvain with resolution selected above
+sel.clust = paste0("CCA_snn_res.",sel.lev)
+
+alldata$orig.ident = factor(alldata$orig.ident, levels = c("STD_EPI_d0","GW_EPI_d0"))
+alldata$Treatment = factor(alldata$Treatment, levels = c("STD","GW"))
+
+alldata@active.assay = "RNA"
+
+alldata <- SetIdent(alldata, value = sel.clust)
+table(alldata@active.ident)
+alldata$ident_clust = paste0(alldata@active.ident,"_",alldata$orig.ident)
+
+
+ggplotColours <- function(n = 6, h = c(0, 360) + 15){
+  if ((diff(h) %% 360) < 1) h[2] <- h[2] - 360/n
+  hcl(h = (seq(h[1], h[2], length = n)), c = 100, l = 65)
+}
+
+cluster_colors = ggplotColours(length(unique(alldata@active.ident))+1)[-1]
+
+```
+
+# Used clustering
+
+
+
+```{r clusteringdim}
+
+plot_grid(ncol = 2, DimPlot(alldata, label = T, shuffle = TRUE, 
+                                        raster = TRUE) + 
+            NoAxes() + NoLegend() +
+            scale_color_manual(values = cluster_colors),
+          DimPlot(alldata, group.by = "orig.ident", shuffle = TRUE, 
+                                        raster = TRUE) +
+            scale_color_manual(values = rev(ggplotColours(2))) + 
+            NoAxes() + theme(legend.position = "bottom"))
+
+```
+
+```{r, fig.height =4}
+
+
+
+
+frequencies = as.data.frame(table(data.frame(cluster=alldata@meta.data[,sel.clust],
+                 sample = alldata$orig.ident)))
+frequencies$Proportion=NA
+for(i in 1:nrow(frequencies)){
+  frequencies$Proportion[i] = frequencies$Freq[i]/sum(frequencies$Freq[frequencies$sample==frequencies$sample[i]])
+}
+
+plot_grid(ggplot(alldata@meta.data, aes_string(fill= sel.clust, x = "Treatment")) +
+            plottheme + 
+            geom_bar(position = "fill", color = "black") +
+            theme(panel.background = element_blank(),
+                  axis.ticks = element_blank(), 
+                  axis.title.y = element_blank()),
+          ggplot(frequencies, aes(fill=sample,
+                                  y = Proportion, 
+                                  x = cluster)) + plottheme + 
+            geom_bar(stat = "identity",position="dodge") +
+            theme(panel.background = element_blank(),
+                  axis.ticks.y = element_blank()),
+          rel_widths = c(2,3))
+
+
+```
+
+
+```{r, fig.height = 3}
+
+DotPlot(alldata, features = c("Ptprc","Epcam"), 
+    assay = "RNA") + coord_flip() + plottheme
+
+```
+
+
+# Cluster marker genes
+
+Top 25 (by p-value) genes with logFC>0.2 for each cluster, sorted by logFC:
+
+
+```{r,  fig.height = 10}
+
+
+
+
+if(file.exists(paste0("../analysis/clustermarkers_EPI_CCA_",sel.lev,".rds"))){
+  markers_genes = readRDS(paste0("../analysis/clustermarkers_EPI_CCA_",sel.lev,".rds"))
+}else{
+  markers_genes <- FindAllMarkers(alldata, logfc.threshold = 0.2, test.use = "wilcox", 
+  min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE, max.cells.per.ident = 300, 
+  assay = "RNA", random.seed = 42)
+  saveRDS(markers_genes, paste0("../analysis/clustermarkers_EPI_CCA_",sel.lev,".rds"))
+}
+
+
+top25 <- markers_genes %>% group_by(cluster) %>% top_n(-25, p_val)
+top25 <- top25 %>% group_by(cluster) %>% top_n(25, avg_log2FC)
+
+
+mypar(2, 5, mar = c(4, 6, 3, 1))
+for (i in unique(top25$cluster)) {
+    barplot(sort(setNames(top25$avg_log2FC, top25$gene)[top25$cluster == i], F), horiz = T, 
+        las = 1, main = paste0(i, " vs. rest"), border = "white", yaxs = "i")
+    abline(v = c(0, 0.25), lty = c(1, 2))
+}
+
+
+
+```
+
+
+Top 5 (by p-value) genes with logFC>0.2 for each cluster:
+
+```{r, fig.height=8}
+
+top5 <- markers_genes %>% group_by(cluster) %>% top_n(-5, p_val_adj)
+top5 <- top5 %>% group_by(cluster) %>% top_n(5, avg_log2FC)
+
+alldata <- ScaleData(alldata, features = as.character(unique(top5$gene)), assay = "RNA")
+DoHeatmap(alldata, features = as.character(unique(top5$gene)), group.by = sel.clust, 
+    assay = "RNA") + plottheme
+
+#pdf(paste0("../figures/clustermarkers_EPI_",sel.lev,".pdf"), width = 10, height = 10)
+#DoHeatmap(alldata, features =  as.character(unique(top5$gene)), assay ="RNA",label = FALSE) + labs(color = "Cluster")
+#dev.off()
+
+
+DotPlot(alldata, features = rev(as.character(unique(top5$gene))), 
+    assay = "RNA") + coord_flip() + plottheme
+
+
+# topAll = markers_genes %>% group_by(cluster)
+# DoHeatmap(alldata, features =  as.character(unique(topAll$gene)), assay ="RNA",label = FALSE) + labs(color = "Cluster") 
+
+
+# DoHeatmap(alldata, features = as.character(unique(top5$gene)), group.by = sel.clust,
+#     assay = "RNA", label = FALSE)
+# 
+# DotPlot(alldata, features = rev(as.character(unique(top5$gene))), group.by = sel.clust, 
+#     assay = "RNA") + coord_flip()
+
+```
+
+Top 3 (by p-value) genes with logFC>0.2 for each cluster:
+
+```{r, fig.height=10}
+
+top3 <- top5 %>% group_by(cluster) %>% top_n(-3, p_val)
+top3 <- top3 %>% group_by(cluster) %>% top_n(3, avg_log2FC)
+
+VlnPlot(alldata, features = as.character(unique(top3$gene)), ncol = 5, group.by = sel.clust, 
+    assay = "RNA", pt.size = -1)
+
+```
+
+```{r, fig.height=12}
+
+plot_grid(plotlist = lapply(FeaturePlot(alldata, 
+                                        features = as.character(unique(top3$gene)), 
+                                        raster = TRUE,
+    slot = "data", combine = FALSE), function(x){x + NoAxes() + plottheme + 
+        theme(legend.key.width = unit(5, "pt"))}), ncol = 4)
+
+```
+
+
+# Annotations
+
+Based on the top DE genes, here are my predctions for the cell types represented by each cluster:
+
+* Cluster 0: Enterocytes
+* Cluster 1: Immune cells
+* Cluster 2: Stem cells
+* Cluster 3: Proliferating stem cells
+* Cluster 4: Immune cells
+* Cluster 5: Other (low quality enterocytes, enteroendocrine)
+* Cluster 6: Enterocytes (Apoc2, Apoa1, Aldh1a1)
+* Cluster 7: Goblet cells
+
+# Diet comparisons
+
+## Full samples
+
+```{r, fig.height = 3}
+
+volcanotheme = theme(axis.text = element_text(size = 8),
+                     axis.title = element_text(size = 8),
+                     panel.grid = element_blank(),
+                     panel.background = element_blank(),
+                     
+                    plot.title = element_text(hjust = 0.5,
+                                              size = 10))
+
+if(!file.exists("../analysis/epi_de_all.rds")){
+epi_de = FindMarkers(alldata,
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf)
+saveRDS(epi_de, "../analysis/epi_de_all.rds")
+}else{
+  epi_de = readRDS("../analysis/epi_de_all.rds")
+}
+
+epi_de$gene = rownames(epi_de)
+
+
+vdata = epi_de
+g_all = ggplot(vdata, aes(x = avg_log2FC, y = -log10(p_val_adj))) + 
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  geom_point(size = 1) + 
+  geom_text_repel(data = vdata[abs(vdata$avg_log2FC)>1,],
+                  aes(label = gene), size = 2.5) + 
+  labs(title = "All cells") +
+  volcanotheme
+
+
+epi_de_500 = FindMarkers(alldata,
+            ident.1 = "GW",ident.2 = "STD",
+            group.by = "Treatment", logfc.threshold = -Inf,
+            max.cells.per.ident = 500)
+
+epi_de_500$gene = rownames(epi_de_500)
+
+vdata = epi_de_500
+g_500 = ggplot(vdata, aes(x = avg_log2FC, y = -log10(p_val_adj))) + 
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  geom_point(size = 1) + 
+  geom_text_repel(data = vdata[abs(vdata$avg_log2FC)>1,],
+                  aes(label = gene), size = 2.5) + 
+  labs(title = "500 cells per group") +
+  volcanotheme
+
+plot_grid(g_all,
+          g_500)
+
+```
+
+
+## Per cluster
+
+### All cells
+
+For each cluster, the differentially expressed genes between the two treatments are identified. The results are shown below: Dot plots for the top 20 DE genes and volcano plots for all DE genes. Note that the higher significance in the first clusters is primarily due to the sizes of the clusters.
+
+```{r de, fig.height = 4, fig.width = 2.5}
+
+
+if(!file.exists(paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,".rds"))){
+DGE_list_Treatment = list()
+
+  for(i in sort(unique(alldata@active.ident))){
+  message(paste("Cluster",i))
+  # select all cells in cluster i
+  cell_selection <- subset(alldata, cells = colnames(alldata)[alldata@active.ident == 
+      i])
+  cell_selection <- SetIdent(cell_selection, value = "Treatment")
+  # Compute differential expression
+  DGE_cell_selection <- FindMarkers(ident.1 = "GW", ident.2 = "STD",
+                                    cell_selection, logfc.threshold = 0.2,
+                                    test.use = "wilcox", 
+      min.pct = 0.1, only.pos = FALSE,
+      assay = "RNA")
+  DGE_list_Treatment[[paste("Cluster",i)]] = DGE_cell_selection[DGE_cell_selection$p_val_adj<0.001,]
+  DGE_list_Treatment[[paste("Cluster",i)]]$gene = rownames(DGE_list_Treatment[[paste("Cluster",i)]])
+  saveRDS(DGE_list_Treatment, paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,".rds"))
+}}else{
+  DGE_list_Treatment = readRDS(paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,".rds"))
+}
+
+```
+
+
+```{r}
+
+num.cells = as.matrix(table(alldata@active.ident,
+                  alldata$Treatment))
+rownames(num.cells) = paste0("Cluster ", rownames(num.cells))
+
+reglist = lapply(names(DGE_list_Treatment), function(i){
+  message(i)
+  x = DGE_list_Treatment[[i]]
+  c(up = sum(x$avg_log2FC > 0),
+    down = sum(x$avg_log2FC < 0),
+    total = nrow(x),
+    min.cells = min(num.cells[i,]))})
+names(reglist) = names(DGE_list_Treatment)
+regdf = as.data.frame(reglist)
+colnames(regdf) = gsub("Cluster.","", colnames(regdf))
+
+```
+
+Number of DE genes per cluster
+
+`r knitr::kable(regdf)`
+
+Below are the numbers of DE genes per cluster according to size of cluster. 
+
+```{r,fig.height = 4, fig.width = 4}
+
+
+tregdf = as.data.frame(t(regdf))
+tregdf$Cluster = rownames(tregdf)
+ggplot(tregdf, aes(x = min.cells, y = total)) + 
+  geom_text(aes(label = Cluster ))
+
+```
+
+```{r dotplots, fig.height = 4, fig.width = 2.5}
+for(i in sort(unique(alldata@active.ident))){
+  top20_cell_selection <- DGE_list_Treatment[[paste("Cluster",i)]]
+  n = min(nrow(top20_cell_selection), 20)
+  top20_cell_selection <- top20_cell_selection[order(top20_cell_selection$p_val)[1:n],]
+  top20_cell_selection <- top20_cell_selection[order(top20_cell_selection$avg_log2FC)[1:n],]
+  # print(VlnPlot(subset(alldata, idents = i),unique(top20_cell_selection$gene), 
+  #         group.by = "orig.ident", assay = "RNA") + theme(axis.text = element_text(size = 1)))
+  if(nrow(top20_cell_selection)>0){
+    d = DotPlot(subset(alldata, idents = i), scale = FALSE, 
+                features = rev(as.character(unique(top20_cell_selection$gene))), 
+      assay = "RNA", group.by = "Treatment") + coord_flip() + plottheme +
+        labs(title = paste("Cluster (",i,paste(top3$gene[top3$cluster==i],collapse = ", "),
+                           ") (",nrow(DGE_list_Treatment[[paste("Cluster",i)]])," genes)"))
+    d$guides$size$title = "Percent"
+    d$guides$colour$title = "Average"
+    print(d)
+  }
+}
+
+```
+
+```{r volcanos, fig.height = 4, fig.width = 7}
+
+
+for(i in sort(unique(alldata@active.ident))){
+  res = DGE_list_Treatment[[paste("Cluster",i)]]
+  
+  #res$avg_log2FC[res$cluster=="STD"] = 0-res$avg_log2FC[res$cluster=="STD"]
+  
+  if(nrow(res)>0){
+      print(ggplot(res, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+              geom_point(color = "#AAAAAA") + 
+              geom_hline(yintercept = 0) +
+              geom_vline(xintercept = 0) + 
+              geom_text_repel(aes(label = gene), size = 2.5) +
+              plottheme +
+              theme(panel.background = element_blank(),
+                    panel.grid = element_blank()) + 
+        labs(title = paste("Cluster",i,paste(top3$gene[top3$cluster==i],collapse = ", "))))
+  
+  }
+}
+
+
+
+```
+
+
+
+### Max 100 cells per group
+
+To enable comparison between DE in different clusters, the DE analysis is redone using a smaller number of cells (100 per group). The results are shown in the same format as above.
+
+```{r de_100, fig.height = 4, fig.width = 2.5}
+
+
+if(!file.exists(paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,"_balanced.rds"))){
+DGE_list_Treatment = list()
+
+  for(i in sort(unique(alldata@active.ident))){
+  message(paste("Cluster",i))
+  # select all cells in cluster i
+  cell_selection <- subset(alldata, cells = colnames(alldata)[alldata@active.ident == 
+      i])
+  cell_selection <- SetIdent(cell_selection, value = "Treatment")
+  # Compute differential expression
+  DGE_cell_selection <- FindMarkers(ident.1 = "GW", ident.2 = "STD",
+                                    cell_selection, logfc.threshold = 0.2,
+                                    test.use = "wilcox", max.cells.per.ident = 100,
+      min.pct = 0.1, only.pos = FALSE,
+      assay = "RNA")
+  DGE_list_Treatment[[paste("Cluster",i)]] = DGE_cell_selection[DGE_cell_selection$p_val_adj<0.001,]
+  DGE_list_Treatment[[paste("Cluster",i)]]$gene = rownames(DGE_list_Treatment[[paste("Cluster",i)]])
+  saveRDS(DGE_list_Treatment, paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,"_balanced.rds"))
+}}else{
+  DGE_list_Treatment = readRDS(paste0("../analysis/DE_GWvsSTD_EPI_",sel.lev,"_balanced.rds"))
+}
+```
+
+
+```{r}
+
+num.cells = as.matrix(table(alldata@active.ident,
+                  alldata$Treatment))
+num.cells[num.cells>100] = 100
+rownames(num.cells) = paste0("Cluster ", rownames(num.cells))
+
+reglist = lapply(names(DGE_list_Treatment), function(i){
+  message(i)
+  x = DGE_list_Treatment[[i]]
+  c(up = sum(x$avg_log2FC > 0),
+    down = sum(x$avg_log2FC < 0),
+    total = nrow(x),
+    min.cells = min(num.cells[i,]))})
+names(reglist) = names(DGE_list_Treatment)
+regdf = as.data.frame(reglist)
+colnames(regdf) = gsub("Cluster.","", colnames(regdf))
+
+```
+
+Number of DE genes per cluster
+
+`r knitr::kable(regdf)`
+
+
+```{r,fig.height = 4, fig.width = 4}
+
+
+tregdf = as.data.frame(t(regdf))
+tregdf$Cluster = rownames(tregdf)
+ggplot(tregdf, aes(x = as.numeric(Cluster), y = total)) + 
+  geom_bar(stat = "identity")
+
+```
+
+```{r dotplots_100, fig.height = 4, fig.width = 2.5}
+
+for(i in sort(unique(alldata@active.ident))){
+  top20_cell_selection <- DGE_list_Treatment[[paste("Cluster",i)]]
+  n = min(nrow(top20_cell_selection), 20)
+  top20_cell_selection <- top20_cell_selection[order(top20_cell_selection$p_val)[1:n],]
+  top20_cell_selection <- top20_cell_selection[order(top20_cell_selection$avg_log2FC)[1:n],]
+  # print(VlnPlot(subset(alldata, idents = i),unique(top20_cell_selection$gene), 
+  #         group.by = "orig.ident", assay = "RNA") + theme(axis.text = element_text(size = 1)))
+  if(nrow(top20_cell_selection)>0){
+    d = DotPlot(subset(alldata, idents = i), scale = FALSE, 
+                features = rev(as.character(unique(top20_cell_selection$gene))), 
+      assay = "RNA", group.by = "Treatment") + coord_flip() + plottheme +
+        labs(title = paste("Cluster (",i,paste(top3$gene[top3$cluster==i],collapse = ", "),
+                           ") (",nrow(DGE_list_Treatment[[paste("Cluster",i)]])," genes)"))
+    d$guides$size$title = "Percent"
+    d$guides$colour$title = "Average"
+    print(d)
+  }
+}
+
+```
+
+```{r volcanos_100, fig.height = 4, fig.width = 7}
+
+
+for(i in sort(unique(alldata@active.ident))){
+  res = DGE_list_Treatment[[paste("Cluster",i)]]
+  
+  #res$avg_log2FC[res$cluster=="STD"] = 0-res$avg_log2FC[res$cluster=="STD"]
+  
+  if(nrow(res)>0){
+      print(ggplot(res, aes(x = avg_log2FC, y = -log10(p_val_adj))) +
+              geom_point(color = "#AAAAAA") + 
+              geom_hline(yintercept = 0) +
+              geom_vline(xintercept = 0) + 
+              geom_text_repel(aes(label = gene), size = 2.5) +
+              plottheme +
+              theme(panel.background = element_blank(),
+                    panel.grid = element_blank()) + 
+        labs(title = paste("Cluster",i,paste(top3$gene[top3$cluster==i],collapse = ", "))))
+  
+  }
+}
+
+
+
+```
