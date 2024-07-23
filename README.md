@@ -20,6 +20,14 @@ conda install -c conda-forge mamba
 mamba env create -n microarray -f env_microarray.yml
 conda activate microarray
 ```
+***
+### Analysis Description
+
+The list of all analysis done in the manuscript are described below:
+
+| Notebook | Analysis Description | Conda Environment | Figure |
+|----------|----------------------|-------------------|--------|
+| [AOMDSS_bulk_Analysis](https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigenesis/blob/main/AOMDSS_bulk/AOMDSS_bulk_Analysis.Rmd) | bulk RNAseq of AOM/DSS kinetics in Mouse Colon | [aomdss_bulk_env.yml](https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigenesis/blob/main/AOMDSS_bulk/aomdss_bulk_env.yml) | Fig. 4.c
 
 ***
 ### Datasets
@@ -33,4 +41,5 @@ The list of all datasets used in the manuscript are depicted below:
 | scRNAseq | Organoids scRNAseq | This publication | [GSE180079](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180079) |
 | Bulk RNAseq | AOM/DSS Colon bulk RNAseq | This publication | [GSE180078](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180078) |
 | scRNAseq | Small Intestine scRNAseq | This publication | [GSE227726](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227726) |
-| Microarray | Colon Cancer Microarray  | [Marisa et al 2013  Plos Medicine]( https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453)| [GSE39582]( https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
+| Microarray | Colon Cancer Microarray  | [Marisa et al 2013 Plos Medicine](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453) | [GSE39582]( https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
+| scRNAseq | DSS Colon scRNAseq  | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
