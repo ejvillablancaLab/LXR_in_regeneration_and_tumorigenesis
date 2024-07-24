@@ -50,5 +50,7 @@ The list of all datasets used in the manuscript are depicted below:
 | scRNAseq | Small Intestine Organoids scRNAseq | This publication | [GSE180079](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180079) |
 | Bulk RNAseq | AOM/DSS Colon bulk RNAseq | This publication | [GSE180078](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180078) |
 | scRNAseq | Small Intestine scRNAseq | This publication | [GSE227726](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227726) |
-| Microarray | Colon Cancer Microarray  | [Marisa et al 2013 Plos Medicine](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453) | [GSE39582](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
-| scRNAseq | DSS Colon scRNAseq  | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
+| Microarray | Colon Cancer Microarray | [Marisa et al 2013 Plos Medicine](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453) | [GSE39582](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
+| scRNAseq | DSS Colon scRNAseq | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
+| scRNAseq | Irradiated Colon scRNAseq | [Ayyaz et al 2019 Nature](https://www.nature.com/articles/s41586-019-1154-y) | [GSE117783](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE117783)
+| Bulk RNAseq | DSS Colon Bulk RNAseq | [Czarnewski et al 2019 Nat Commun](https://www.nature.com/articles/s41467-019-10769-x) | [GSE131032](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131032) |
