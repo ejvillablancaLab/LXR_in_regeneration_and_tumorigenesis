@@ -38,6 +38,7 @@ The list of all analysis done in the manuscript are described below:
 | Spatial Transcriptomics of Mouse Small Intestine | [02_cNMF.Rmd](https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigenesis/blob/main/Mouse_SI_Visium/02_cNMF.Rmd) | Non-negative matrix factorization analysis by cNMF package | [si_visium_env.yml](https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigenesis/blob/main/Mouse_SI_Visium/si_visium_env.yml) | Fig. 1.a, S2.g, S3.e, S6.a-d |
 | scRNAseq of Mouse Small Intestine | [si_irrad_sc_analysis.Rmd]() | scRNAseq analysis of small intestine crypts from mice at 0- and 3-days post irradiation (GSE117783) | [si_irrad_sc_env.yml]() | Fig. 3.b |
 | Bulk RNAseq of Mouse Colon | [colon_dss_bulk_analysis.Rmd]() | bulk RNAseq analysis of DSS kinetics in mouse colon (GSE131032) | [colon_dss_bulk_env.yml]() | Fig. 3.c |
+| Regeneration Associated DEGs | [Reg_DEGs_KEGG_analysis.Rmd]() | DEG overlap between regenerative and steady state colonic tissue and small intestine crypts following DSS-induced colitis and irradiation plus KEGG pathway analysis  | [Reg_DEGs_KEGG_env.yml]() | Fig. S1.a |
 
 ***
 ### Datasets
