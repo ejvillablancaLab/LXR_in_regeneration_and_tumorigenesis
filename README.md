@@ -45,7 +45,7 @@ The list of all analysis done in the manuscript are described below:
 
 The list of all datasets used in the manuscript are depicted below:
 
-| Technology | Dataset | source publication | Accession no |
+| Technology | Dataset | Source Publication | Accession no |
 |------------|---------|--------------------|--------------|
 | Spatial Transcriptomics | Irradiated Small Intestine Visium Spatial Transcriptomics | This publication | [GSE227742](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227742) |
 | Spatial Transcriptomics | AOM/DSS Colon Visium Spatial Transcriptomics | This publication | [GSE227598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227598) |
