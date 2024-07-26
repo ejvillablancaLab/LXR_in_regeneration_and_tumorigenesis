@@ -1,0 +1,68 @@
+---
+title: "KEGG pathway PLOT- Kumar Parijat Tripathi"
+output: html_notebook
+---
+
+
+```{r}
+library(ggplot2)
+theme_set(theme_bw()) 
+library(devtools)
+install_github("wjawaid/enrichR")
+
+library(enrichR)
+dbs <- listEnrichrDbs()
+show(dbs)
+
+```
+
+```{r}
+list_up <- read.table("245.txt")
+
+dbs <- c("KEGG_2019_Mouse","GO_Molecular_Function_2018","GO_Biological_Process_2018")
+```
+
+```{r}
+up_genes <- as.vector(list_up[,1])
+
+
+eup <- enrichr(up_genes, dbs)
+
+
+up <- eup$GO_Biological_Process_2018
+```
+
+```{r}
+data_enrich <- read.table("KEGG_2019_Mouse_table-3.tsv", sep = "\t", header = TRUE)
+
+data_enrich2 <- data_enrich[c(1:5),]
+
+data_enrich2 <- data_enrich2[order(data_enrich2$Combined.Score), ]
+
+data_enrich2$type <- "DE genes"
+
+data_enrich2$Term <- factor(data_enrich2$Term, levels=data_enrich2$Term)
+
+
+ggplot(data_enrich2, aes(x=Term, y=Combined.Score, label=Combined.Score)) + 
+  geom_bar(stat='identity', width=.5,position="dodge",fill="steelblue")  +
+  labs(subtitle="Combined scores from KEGG 2019", 
+       title= "KEGG Pathway") + scale_fill_manual(name="DE Genes", 
+                                                                labels = c("DE genes"), 
+                                                                values = c("data_enrich2"="#00ba38")) +
+  coord_flip() + theme_minimal()
+
+
+
+a <- ggplot(data_enrich2, aes(x=Term, y=Combined.Score, label=Combined.Score)) + 
+  geom_bar(stat='identity', width=.5,position="dodge", color="blue", fill="red")  +
+  labs(subtitle="Combined scores from KEGG 2019", 
+       title= "KEGG pathway") + scale_fill_manual(name="Expression", 
+                                                                labels = c("DE genes"), 
+                                                                values = c("data_enrich2"="#00ba38")) +
+  coord_flip() + theme_minimal()
+#pdf("enrichment.pdf")
+plot(a)
+#dev.off()
+```
+
