@@ -12,13 +12,13 @@ git clone https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigene
 2. Create and activate the conda environment based on the type of analysis you plan to run. For example, to run microarray analysis part:
 ```
 cd LXR_in_regeneration_and_tumorigenesis
-cd microarray
+cd Human_Colon_CRC_Microarray
 
 conda activate base
 conda install -c conda-forge mamba
 
-mamba env create -n microarray -f env_microarray.yml
-conda activate microarray
+mamba env create -n colon_crc_microarray_env -f colon_crc_microarray_env.yml
+conda activate colon_crc_microarray_env
 ```
 ***
 ### Analysis Description
