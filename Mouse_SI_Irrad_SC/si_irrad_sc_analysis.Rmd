@@ -1,0 +1,273 @@
+---
+title: "Seurat - irradiation pooled vs normal pooled from Ayyaz nature 2019-Kumar Parijat Tripathi"
+editor_options:
+  chunk_output_type: console
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    theme: united
+  pdf_document: default
+---
+
+------------------------------------------------------------------------
+
+```{r init, cache=FALSE, message=FALSE}
+library(Seurat)
+library(dplyr)
+library(venn)
+library(cowplot)
+#setwd("/Users/kumtri/Documents/GSE117783_RAW/enriched_crypts")
+```
+
+```{r loading_data, cache=TRUE, message=FALSE}
+# # Load the crypts dataset
+# 
+# C05.data <- Read10X(data.dir = "/Users/kumtri/Documents/GSE117783_RAW/enriched_crypts/CO5")
+# #cOTII <- CreateSeuratObject(raw.data = cOTII.data, min.cells = 3, min.genes = 300, project = "10X_Data")
+# C07.data <- Read10X(data.dir = "/Users/kumtri/Documents/GSE117783_RAW/enriched_crypts/CO7")
+```
+
+```{r creating seurat onject}
+
+C05 <- CreateSeuratObject(counts = C05.data, project = "Crypt_normal", min.cells = 1, min.features = 200)
+C07 <- CreateSeuratObject(counts = C07.data, project = "Crypt_irr", min.cells = 1, min.features = 200)
+```
+
+```{r quality check of the data}
+C05
+C07
+
+C05[["percent.mt"]] <- PercentageFeatureSet(C05, pattern = "^mt-")
+C07[["percent.mt"]] <- PercentageFeatureSet(C07, pattern = "^mt-")
+```
+
+For C05
+
+```{r quality check 2}
+VlnPlot(C05, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+For C07
+
+```{r}
+VlnPlot(C07, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r Plots for C05}
+plot1 <- FeatureScatter(C05, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(C05, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+```
+
+```{r plots for C07}
+plot1 <- FeatureScatter(C07, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(C07, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+```
+
+```{r filtering_cells}
+C05 <- subset(C05, subset = nFeature_RNA > 200 & nFeature_RNA < 10000 & percent.mt < 75)
+C07 <- subset(C07, subset = nFeature_RNA > 200 & nFeature_RNA < 10000 & percent.mt < 75)
+C05
+C07
+```
+
+```{r}
+C05 <- NormalizeData(C05)
+C07 <- NormalizeData(C07)
+```
+
+```{r}
+C05 <- FindVariableFeatures(C05, selection.method = "vst", nfeatures = 2000)
+C07<- FindVariableFeatures(C07, selection.method = "vst", nfeatures = 2000)
+```
+
+Variable genes for C05
+
+```{r}
+# Identify the 10 most highly variable genes
+#top10 <- head(VariableFeatures(C05), 20)
+
+# plot variable features with and without labels
+##plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+#CombinePlots(plots = list(plot1, plot2))
+#plot_grid(plot1,plot2)
+```
+
+Variable genes for C07
+
+```{r}
+# Identify the 10 most highly variable genes
+#top10 <- head(VariableFeatures(C07), 20)
+
+# plot variable features with and without labels
+#plot1 <- VariableFeaturePlot(C07)
+#plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+#CombinePlots(plots = list(plot1, plot2))
+#plot_grid(plot1,plot2)
+```
+
+Scaling the C05
+
+```{r}
+all.genes <- rownames(C05)
+C05 <- ScaleData(C05, features = all.genes)
+```
+
+Scaling the C07
+
+```{r}
+all.genes <- rownames(C07)
+C07 <- ScaleData(C07, features = all.genes)
+```
+
+var.regress mitochondrial genes for C05
+
+```{r}
+C05 <- ScaleData(C05, vars.to.regress = "percent.mt")
+C07 <- ScaleData(C07, vars.to.regress = "percent.mt")
+```
+
+```{r}
+C05$stim <- "normal"
+C07$stim <- "irradiation"
+```
+
+finding anchors for the data
+
+```{r}
+crypts.anchors <- FindIntegrationAnchors(object.list = list(C05, C07), dims = 1:20)
+```
+
+```{r}
+crypts.combined <- IntegrateData(anchorset = crypts.anchors, dims = 1:20)
+```
+
+Run a single integrated analysis
+
+```{r}
+DefaultAssay(crypts.combined) <- "integrated"
+crypts.combined <- ScaleData(crypts.combined, verbose = FALSE)
+crypts.combined <- RunPCA(crypts.combined, npcs = 30, verbose = FALSE)
+# t-SNE and Clustering
+crypts.combined <- RunTSNE(crypts.combined, reduction = "pca", dims = 1:20)
+crypts.combined <- FindNeighbors(crypts.combined, reduction = "pca", dims = 1:20)
+crypts.combined <- FindClusters(crypts.combined, resolution = 0)
+```
+
+Plotting TSNE plots
+
+```{r}
+# Visualization
+p1 <- DimPlot(crypts.combined, reduction = "tsne", group.by = "stim")
+p2 <- DimPlot(crypts.combined, reduction = "tsne", label = TRUE)
+plot_grid(p1, p2)
+```
+
+```{r}
+DimPlot(crypts.combined, reduction = "tsne", split.by = "stim")
+```
+
+Identify conserved markers
+
+```{r}
+DefaultAssay(crypts.combined) <- "RNA"
+crypts.markers0 <- FindConservedMarkers(crypts.combined, ident.1 = 0, grouping.var = "stim", verbose = FALSE)
+head(crypts.markers0,20)
+```
+
+\`
+
+```{r}
+markers.to.plot <- c("Aoc1","Arg2","Ccl25","Fabp1","Alpi","Apoa4","Apoa1","Tph","Chga","Chgb","Scg3","Pax6","Muc2","Ttf3","Cd3e","Cd3g","Lyz1","Defa22","Defa24","Ang4","Lgr5","Olfm4","Slc12a2","Ascl2","Axin2","Clu","Anxa1","Ly6d","Areg","Dclk1","Trpm5","Abca1","Abcg5","Abcg1","Abcg8","Srebf1","Fasn","Npc1l1","Scd1","Ppara","Rnf186","Rnf145","Cyp27a1")
+#DotPlot(crypts.combined, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 4, 
+#    split.by = "stim") + RotatedAxis()
+DotPlot(crypts.combined, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 5, split.by = "stim")+ RotatedAxis()
+
+```
+
+```{r}
+crypts.combined_filtered <- subset(x = crypts.combined, idents = "0")
+```
+
+```{r}
+markers.to.plot <- c("Aoc1","Arg2","Ccl25","Fabp1","Alpi","Apoa4","Apoa1","Tph","Chga","Chgb","Scg3","Pax6","Muc2","Ttf3","Cd3e","Cd3g","Lyz1","Defa22","Defa24","Ang4","Lgr5","Olfm4","Slc12a2","Ascl2","Axin2","Clu","Anxa1","Ly6d","Areg","Dclk1","Trpm5","Abca1","Abcg5","Abcg1","Abcg8","Srebf1","Fasn","Npc1l1","Scd1","Ppara","Rnf186","Rnf145","Cyp27a1")
+#DotPlot(crypts.combined, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 4, 
+#    split.by = "stim") + RotatedAxis()
+DotPlot(crypts.combined_filtered, features = rev(markers.to.plot), cols = c("blue", "red"), dot.scale = 5, split.by = "stim")+ RotatedAxis()
+```
+
+cols = c("blue", "red")
+
+```{r}
+#VlnPlot(crypts.combined,c("Ly6g"))
+```
+
+```{r}
+
+markers.to.plot <- c("Abca1","Abcg1","Lpcat3","Ppara","Apoc2")
+
+#markers.to.plot <- c("Ly6g")
+
+DotPlot(crypts.combined_filtered, features = rev(markers.to.plot), cols = c("blue","red"), dot.scale = 8, split.by = "stim", legend=TRUE) + RotatedAxis()
+```
+
+```{r}
+VlnPlot(crypts.combined_filtered,c("Abca1","Abcg5","Abcg1","Abcg8","Srebf1","Fasn","Npc1l1","Scd1","Ppara","Rnf186","Rnf145","Cyp27a1"),pt.size=0.2)
+```
+
+```{r}
+crypts.combined_filtered$celltype.stim <- paste(Idents(crypts.combined_filtered), crypts.combined_filtered$stim, sep = "_")
+crypts.combined_filtered$celltype <- Idents(crypts.combined_filtered)
+Idents(crypts.combined_filtered) <- "celltype.stim"
+```
+
+```{r}
+crypts.combined_filtered_markers2 <- FindMarkers(crypts.combined_filtered, ident.1 = "0_irradiation", ident.2 = "0_normal", verbose = FALSE)
+```
+
+```{r}
+write.csv(crypts.markers0, "crypts_markers.tsv", sep=",")
+```
+
+```{r}
+write.csv(crypts.combined_filtered_markers2, "crypts_combined_markers2.tsv", sep=",")
+```
+
+```{r}
+
+#markers.to.plot <- c("Clu","Apoa4","Apoa1","Abca1", "Abcg5","Abcg1","Abcg8","Srebf1","Fasn","Npc1l1","Scd1","Ppara","Rnf186","Rnf145","Cyp27a1")
+
+#markers.to.plot <- c("Ly6g")
+
+markers.to.plot <- c("Abca1","Abcg1","Lpcat3","Apoa4","Apoc2")
+
+DotPlot(crypts.combined_filtered, features = rev(markers.to.plot), cols = c("blue","red"), dot.scale = 10, legend=TRUE, cex= 0.5) + RotatedAxis()
+```
+
+
+
+```{r}
+plots <- VlnPlot(crypts.combined_filtered, features = c("Abca1","Abcg1","Lpcat3","Ppara","Apoa4","Apoc2"),split.by = "stim",   pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 1)
+```
+
+```{r}
+VlnPlot(crypts.combined_filtered, features = c("Abca1","Abcg1","Lpcat3","Ppara","Apoa4","Apoc2"),   pt.size = 0, combine = FALSE)
+```
+
+```{r}
+plots <- VlnPlot(crypts.combined_filtered, features = c("Cyp27a1","Cyp46a1", "Cyp11a1","Ch25h", "Sult1a1","Sult1b1","Sult2b1"),   pt.size = 0, combine = FALSE)
+CombinePlots(plots = plots, ncol = 2)
+```
+
+```{r}
+
+#markers.to.plot <- c("Cyp27a1","Cyp46a1", "Cyp11a1","Ch25h", "Sult1a1","Sult1b1","Sult2b1")
+#markers.to.plot <- c("Cyp27a1","Cyp46a1", "Cyp11a1","Ch25h")
+#markers.to.plot <- c("Sult1a1","Sult1b1","Sult2b1")
+#markers.to.plot <- c("Ly6g")
+markers.to.plot <- c("Cyp27a1","Cyp46a1", "Cyp11a1","Ch25h","Cyp7b1")
+
+DotPlot(crypts.combined_filtered, features = rev(markers.to.plot), dot.scale = 8, cols = c("grey","red")) + RotatedAxis()
+```
