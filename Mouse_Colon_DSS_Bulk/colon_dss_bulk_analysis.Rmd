@@ -1,0 +1,108 @@
+---
+title: "R Notebook for heatmap -kumar parijat tripathi"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+
+```{r}
+library(gplots)
+```
+
+```{r}
+library(RColorBrewer)
+```
+```{r}
+library(pheatmap)
+```
+
+
+## loading the log fold changes in transcriptomic profile for cyp genes
+
+```{r}
+
+data1 <- read.table("matrix_lxr_log_fold.tsv", header = TRUE)
+
+```
+
+```{r}
+rnames <- data1[,1]
+mat_data <- data.matrix(data1[,2:ncol(data1)])
+```
+
+```{r}
+rownames(mat_data) <- rnames
+```
+
+
+```{r}
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+heatmap.2(mat_data,
+  #cellnote = data_matrix,  # same data set for cell labels
+  main = "Normailzed values", # heat map title
+  notecol="black",      # change font color of cell labels to black
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  margins =c(12,15),     # widens margins around plot
+  col=my_palette,       # use on color palette defined earlier
+  #breaks=col_breaks,    # enable color transition at specified limits
+  dendrogram="row",     # only draw a row dendrogram
+  Colv="NA")      
+
+```
+
+```{r}
+heatmap.2(mat_data)
+```
+```{r}
+test2 <- mat_data[row.names(mat_data) %in% c("Sult1b1","Cyp27a1","Ch25h","Cyp46a1","Cyp11a1","Sult2b1","Sult1a1"),]
+```
+
+
+
+
+```{r}
+my_palette <- colorRampPalette(c("blue", "black", "red"))(n = 50)
+pheatmap(test2,colorRampPalette(c("blue", "white", "red"))(n = 50))
+```
+```{r}
+library(pheatmap)
+```
+
+
+```{r}
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 50)
+pheatmap(mat_data,color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdBu")))(100))
+```
+
+
+```{r}
+pdf(file="heatmap_genes_log2_foldchange.pdf")
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 50)
+pheatmap(test2,color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdBu")))(100))
+dev.off()
+```
+
+```{r}
+my_palette <- colorRampPalette(c("blue", "white", "red"))(n = 299)
+heatmap.2(test2,
+  #cellnote = data_matrix,  # same data set for cell labels
+  main = "Log2 fold change", # heat map title
+  notecol="black",      # change font color of cell labels to black
+  density.info="none",  # turns off density plot inside color legend
+  trace="none",         # turns off trace lines inside the heat map
+  margins =c(12,9),     # widens margins around plot
+  col=my_palette,       # use on color palette defined earlier
+  #breaks=col_breaks,    # enable color transition at specified limits
+  dendrogram="row",     # only draw a row dendrogram
+  Colv="NA")      
+
+```
+
+
+
