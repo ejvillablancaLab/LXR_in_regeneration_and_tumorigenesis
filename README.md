@@ -9,7 +9,7 @@ The analysis scripts for each part are available in the corresponding folder. So
 git clone https://github.com/ejvillablancaLab/LXR_in_regeneration_and_tumorigenesis.git
 ```
 
-2. Create and activate the conda environment based on the type of analysis you plan to run. For example, to run microarray analysis part:
+2. Create and activate the conda environment based on the type of analysis you plan to run. For example, to run microarray analysis of human colon part:
 ```
 cd LXR_in_regeneration_and_tumorigenesis
 cd Human_Colon_CRC_Microarray
