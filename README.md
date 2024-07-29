@@ -50,9 +50,9 @@ The list of all datasets used in the manuscript are depicted below:
 | Microarray | Human Colon Cancer Microarray | [Marisa et al 2013 Plos Medicine](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453) | [GSE39582](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
 | Bulk RNAseq | Mouse AOM/DSS Colon Bulk RNAseq | This publication | [GSE180078](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180078) |
 | Bulk RNAseq | Mouse DSS Colon Bulk RNAseq | [Czarnewski et al 2019 Nat Commun](https://www.nature.com/articles/s41467-019-10769-x) | [GSE131032](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE131032) |
+| scRNAseq | Mouse DSS Colon scRNAseq | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
 | Spatial Transcriptomics | Mouse Irradiated Small Intestine Visium Spatial Transcriptomics | This publication | [GSE227742](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227742) |
 | Spatial Transcriptomics | Mouse AOM/DSS Colon Visium Spatial Transcriptomics | This publication | [GSE227598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227598) |
 | scRNAseq | Mouse Small Intestine Organoids scRNAseq | This publication | [GSE180079](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180079) |
 | scRNAseq | Mouse Small Intestine scRNAseq | This publication | [GSE227726](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227726) | 
-| scRNAseq | Mouse DSS Colon scRNAseq | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
 | scRNAseq | Mouse Irradiated Colon scRNAseq | [Ayyaz et al 2019 Nature](https://www.nature.com/articles/s41586-019-1154-y) | [GSE117783](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE117783)
