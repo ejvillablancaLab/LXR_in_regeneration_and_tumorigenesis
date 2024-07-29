@@ -53,6 +53,7 @@ The list of all datasets used in the manuscript are depicted below:
 | scRNAseq | Mouse DSS Colon scRNAseq | [Ho et al 2021 Cell Mol Gastroenterol Hepatol](https://www.sciencedirect.com/science/article/pii/S2352345X21000758?via%3Dihub) | [GSE148794](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE148794) |
 | Spatial Transcriptomics | Mouse Irradiated Small Intestine Visium Spatial Transcriptomics | This publication | [GSE227742](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227742) |
 | scRNAseq | Mouse Small Intestine scRNAseq | This publication | [GSE227726](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227726) | 
+| scRNAseq | Mouse Irradiated Colon scRNAseq | [Ayyaz et al 2019 Nature](https://www.nature.com/articles/s41586-019-1154-y) | [GSE117783](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE117783)
 | Spatial Transcriptomics | Mouse AOM/DSS Colon Visium Spatial Transcriptomics | This publication | [GSE227598](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE227598) |
 | scRNAseq | Mouse Small Intestine Organoids scRNAseq | This publication | [GSE180079](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180079) |
-| scRNAseq | Mouse Irradiated Colon scRNAseq | [Ayyaz et al 2019 Nature](https://www.nature.com/articles/s41586-019-1154-y) | [GSE117783](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE117783)
+
