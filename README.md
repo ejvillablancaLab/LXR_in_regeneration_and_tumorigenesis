@@ -23,7 +23,7 @@ conda activate colon_crc_microarray_env
 ***
 ### Analysis Description
 
-The list of all analysis done in the manuscript are described below:
+The list of all analysis done in the manuscript are described below:<br/>
 Extended Data Figure (EDF)
 
 | Analysis | Notebook | Description | Conda Environment | Figure |
