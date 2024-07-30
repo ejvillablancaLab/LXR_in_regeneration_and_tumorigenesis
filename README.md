@@ -46,7 +46,7 @@ Extended Data Figure (EDF)
 
 The list of all datasets used in the manuscript are depicted below:
 
-| Technology | Dataset | Source Publication | Accession no |
+| Technology | Dataset | Source Publication | Accession No |
 |------------|---------|--------------------|--------------|
 | Microarray | Human Colon Cancer Microarray | [Marisa et al 2013 Plos Medicine](https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1001453) | [GSE39582](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE39582) |
 | Bulk RNAseq | Mouse AOM/DSS Colon Bulk RNAseq | This publication | [GSE180078](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180078) |
